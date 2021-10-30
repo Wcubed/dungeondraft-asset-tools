@@ -12,4 +12,4 @@ The format is as follows:
   - Int64: File offset
   - Int64: File size
   - 16 bytes: MD5
-  - File contents
+- All file contents.

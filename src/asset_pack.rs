@@ -2,31 +2,43 @@ use anyhow::{anyhow, Context, Result};
 use byteorder::{ReadBytesExt, LE};
 use log::info;
 use std::fmt;
-use std::fmt::{Display, Formatter};
-use std::io::{BufRead, Read};
-use std::io::{Cursor, Seek, SeekFrom};
+use std::fmt::Formatter;
+use std::io::Read;
+use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
 const GODOT_METADATA_RESERVED_SPACE: usize = 16 * I32;
+const MD5_BYTES: usize = 16;
 
 #[derive(Debug)]
 struct MetaData {
     version: GodotVersion,
-    nr_of_files: u32,
+    files_meta: Vec<FileMetaData>,
 }
 
 impl MetaData {
-    fn from_read(cursor: &mut dyn Read) -> Result<Self> {
-        let version = GodotVersion::from_read(cursor)?;
-        cursor.read_exact(&mut [0; GODOT_METADATA_RESERVED_SPACE])?;
+    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
+        let version = GodotVersion::from_read(data).context("Could not read godot version")?;
+        data.read_exact(&mut [0; GODOT_METADATA_RESERVED_SPACE])?;
 
-        let nr_of_files = cursor.read_i32::<LE>()? as u32;
+        let nr_of_files = data.read_i32::<LE>()? as usize;
+
+        let mut files_meta = Vec::with_capacity(nr_of_files);
+        for i in 0..nr_of_files {
+            let file_meta = FileMetaData::from_read(data).context(format!(
+                "Could not read file metadata of file {} from {}",
+                i + 1,
+                nr_of_files
+            ))?;
+
+            files_meta.push(file_meta);
+        }
 
         Ok(Self {
             version,
-            nr_of_files,
+            files_meta,
         })
     }
 }
@@ -40,7 +52,7 @@ struct GodotVersion {
 }
 
 impl GodotVersion {
-    fn from_read(data: &mut dyn Read) -> Result<Self> {
+    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         Ok(Self {
             version: data.read_i32::<LE>()?,
             major: data.read_i32::<LE>()?,
@@ -61,30 +73,39 @@ impl fmt::Display for GodotVersion {
 }
 
 #[derive(Debug)]
-struct PackedFile {
+struct FileMetaData {
     path: String,
-    data: Vec<u8>,
-    md5: u16,
+    offset: u64,
+    size: u64,
+    md5: [u8; MD5_BYTES],
 }
 
-impl PackedFile {
-    fn from_read(data: &mut dyn Read) -> Result<Self> {
+impl FileMetaData {
+    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         let path_length = data.read_i32::<LE>()? as usize;
         let path = read_string(data, path_length)?;
 
+        let offset = data.read_i64::<LE>()? as u64;
+        let size = data.read_i64::<LE>()? as u64;
+
+        let mut md5 = [0; MD5_BYTES];
+        data.read_exact(&mut md5)?;
+
         Ok(Self {
             path,
-            data: Vec::new(),
-            md5: 0,
+            offset,
+            size,
+            md5,
         })
     }
 }
 
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
     let mut bytes = vec![0; length];
-    data.read_exact(bytes.as_mut_slice())?;
+    data.read_exact(bytes.as_mut_slice())
+        .context("Could not read string")?;
 
-    Ok(String::from_utf8(bytes)?)
+    Ok(String::from_utf8(bytes).context("Could not convert string from bytes")?)
 }
 
 fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
@@ -96,27 +117,19 @@ fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
     Ok(magic_file_number == ASSET_PACK_MAGIC_FILE_HEADER)
 }
 
-fn unpack_assets(pack: &PathBuf, destination: &PathBuf) -> Result<()> {
+pub fn unpack_assets(pack_path: &PathBuf, destination: &PathBuf) -> Result<()> {
     if !is_dir_empty(destination) {
         return Err(anyhow!("Destination directory is not empty"));
     }
 
-    let mut file = std::fs::File::open(pack).context("Asset pack file does not exist")?;
+    let mut pack = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
 
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    pack.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
 
-    let mut cursor = Cursor::new(bytes);
-    cursor.set_position(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64);
-
-    let metadata = MetaData::from_read(&mut cursor)?;
+    let metadata = MetaData::from_read(&mut pack).context("Could not read metadata")?;
 
     info!("Godot package version: {}", metadata.version);
-    info!("Files in package: {}", metadata.nr_of_files);
-
-    for _ in 0..metadata.nr_of_files {
-        let file = PackedFile::from_read(&mut cursor)?;
-    }
+    info!("Files in package: {}", metadata.files_meta.len());
 
     Ok(())
 }
@@ -131,8 +144,8 @@ fn is_dir_empty(dir: &PathBuf) -> bool {
 #[cfg(test)]
 mod test {
     use crate::asset_pack::{
-        is_dir_empty, is_file_asset_pack, unpack_assets, MetaData, PackedFile,
-        GODOT_METADATA_RESERVED_SPACE,
+        is_dir_empty, is_file_asset_pack, unpack_assets, FileMetaData, MetaData,
+        GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
     };
     use byteorder::{WriteBytesExt, LE};
     use std::io::{Cursor, Write};
@@ -184,8 +197,7 @@ mod test {
     fn unpack_assets_happy_flow() {
         let temp = tempdir().unwrap();
 
-        let result = unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp.into_path());
-        assert!(result.is_ok());
+        unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp.into_path()).unwrap();
 
         unimplemented!();
     }
@@ -201,7 +213,21 @@ mod test {
         data.write_all(&[0; GODOT_METADATA_RESERVED_SPACE as usize])
             .unwrap();
 
-        data.write_i32::<LE>(101).unwrap();
+        let file_amount = 10;
+        data.write_i32::<LE>(file_amount).unwrap();
+
+        let path = String::from("res://something/something_else/filename.txt");
+        let offset = 110;
+        let size = 12;
+        let md5 = [230; MD5_BYTES];
+
+        for _ in 0..file_amount {
+            data.write_i32::<LE>(path.len() as i32).unwrap();
+            data.write_all(path.as_bytes()).unwrap();
+            data.write_i64::<LE>(offset).unwrap();
+            data.write_i64::<LE>(size).unwrap();
+            data.write_all(&md5).unwrap();
+        }
 
         let mut cursor = Cursor::new(data);
         let meta = MetaData::from_read(&mut cursor).unwrap();
@@ -210,20 +236,30 @@ mod test {
         assert_eq!(meta.version.major, 1);
         assert_eq!(meta.version.minor, 19);
         assert_eq!(meta.version.revision, 12);
-        assert_eq!(meta.nr_of_files, 101);
+
+        assert_eq!(meta.files_meta.len(), file_amount as usize);
     }
 
     #[test]
     fn packed_file_from_read() {
         let path = String::from("res://test/bla.txt");
+        let offset = 12;
+        let size = 987;
+        let md5 = [12; MD5_BYTES];
 
         let mut data = vec![];
         data.write_i32::<LE>(path.len() as i32).unwrap();
         data.write_all(path.as_bytes()).unwrap();
+        data.write_i64::<LE>(offset).unwrap();
+        data.write_i64::<LE>(size).unwrap();
+        data.write_all(&md5).unwrap();
 
         let mut cursor = Cursor::new(data);
-        let file = PackedFile::from_read(&mut cursor).unwrap();
+        let file = FileMetaData::from_read(&mut cursor).unwrap();
 
         assert_eq!(file.path, path);
+        assert_eq!(file.offset, offset as u64);
+        assert_eq!(file.size, size as u64);
+        assert_eq!(file.md5, md5);
     }
 }
