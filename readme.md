@@ -13,3 +13,7 @@ The format is as follows:
   - Int64: File size
   - 16 bytes: MD5
 - All file contents.
+
+# Test files
+The `test_files/example_pack.dungeondraft_pack` file is a slimmed down version of
+the example pack provided by DungeonDraft.

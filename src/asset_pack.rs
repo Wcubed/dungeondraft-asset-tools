@@ -3,7 +3,8 @@ use byteorder::{ReadBytesExt, LE};
 use log::info;
 use std::fmt;
 use std::fmt::Formatter;
-use std::io::Read;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::PathBuf;
 
@@ -11,6 +12,9 @@ const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
 const GODOT_METADATA_RESERVED_SPACE: usize = 16 * I32;
 const MD5_BYTES: usize = 16;
+
+const RESOURCE_PATH_PREFIX: &str = "res://";
+const ASSET_PACK_PREFIX: &str = "packs/";
 
 #[derive(Debug)]
 struct MetaData {
@@ -76,7 +80,7 @@ impl fmt::Display for GodotVersion {
 struct FileMetaData {
     path: String,
     offset: u64,
-    size: u64,
+    size: usize,
     md5: [u8; MD5_BYTES],
 }
 
@@ -86,7 +90,7 @@ impl FileMetaData {
         let path = read_string(data, path_length)?;
 
         let offset = data.read_i64::<LE>()? as u64;
-        let size = data.read_i64::<LE>()? as u64;
+        let size = data.read_i64::<LE>()? as usize;
 
         let mut md5 = [0; MD5_BYTES];
         data.read_exact(&mut md5)?;
@@ -122,6 +126,12 @@ pub fn unpack_assets(pack_path: &PathBuf, destination: &PathBuf) -> Result<()> {
         return Err(anyhow!("Destination directory is not empty"));
     }
 
+    info!(
+        "Unpacking {} into {}",
+        pack_path.display(),
+        destination.display()
+    );
+
     let mut pack = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
 
     pack.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
@@ -130,6 +140,35 @@ pub fn unpack_assets(pack_path: &PathBuf, destination: &PathBuf) -> Result<()> {
 
     info!("Godot package version: {}", metadata.version);
     info!("Files in package: {}", metadata.files_meta.len());
+
+    for meta in metadata.files_meta {
+        let file_path_without_prefixes = meta
+            .path
+            .trim_start_matches(RESOURCE_PATH_PREFIX)
+            .trim_start_matches(ASSET_PACK_PREFIX);
+
+        let mut path = destination.clone();
+        path.push(file_path_without_prefixes);
+
+        info!("Unpacking {}", path.display());
+
+        // TODO: Check if file path does not exit the target directory.
+
+        unpack_file(&mut pack, meta.size, &path)?;
+    }
+
+    Ok(())
+}
+
+fn unpack_file(data: &mut dyn Read, file_size: usize, file_path: &PathBuf) -> Result<()> {
+    let folder = file_path.parent().unwrap();
+    std::fs::create_dir_all(folder)?;
+
+    let mut file_data = vec![0; file_size];
+    data.read_exact(file_data.as_mut_slice())?;
+
+    let mut file = File::create(file_path)?;
+    file.write_all(file_data.as_slice())?;
 
     Ok(())
 }
@@ -148,6 +187,9 @@ mod test {
         GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
     };
     use byteorder::{WriteBytesExt, LE};
+    use log::LevelFilter;
+    use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
+    use std::fs::File;
     use std::io::{Cursor, Write};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -187,7 +229,7 @@ mod test {
         let temp = tempdir().unwrap();
 
         let file = temp.path().join("dir_not_empty.txt");
-        std::fs::File::create(file).unwrap();
+        File::create(file).unwrap();
 
         let result = unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp.into_path());
         assert!(result.is_err());
@@ -195,11 +237,53 @@ mod test {
 
     #[test]
     fn unpack_assets_happy_flow() {
+        TermLogger::init(
+            LevelFilter::Debug,
+            Config::default(),
+            TerminalMode::Mixed,
+            ColorChoice::Auto,
+        )
+        .unwrap();
+
         let temp = tempdir().unwrap();
+        let temp_path = temp.into_path();
 
-        unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp.into_path()).unwrap();
+        unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp_path).unwrap();
 
-        unimplemented!();
+        assert!(temp_path.join("8UWKyQPf.json").exists());
+
+        let id = "8UWKyQPf";
+        let expected_files = vec![
+            "data/walls/sample_wall.dungeondraft_wall",
+            "data/default.dungeondraft_tags",
+            "data/tilesets/tileset_smart.dungeondraft_tileset",
+            "data/tilesets/tileset_smart_double.dungeondraft_tileset",
+            "data/tilesets/tileset_simple.dungeondraft_tileset",
+            "pack.json",
+            "textures/paths/sample_path.png",
+            "textures/paths/streak.png",
+            "textures/lights/sample_light.png",
+            "textures/roofs/roof_name/edge.png",
+            "textures/roofs/roof_name/hip.png",
+            "textures/roofs/roof_name/tiles.png",
+            "textures/roofs/roof_name/ridge.png",
+            "textures/walls/sample_wall_end.png",
+            "textures/walls/sample_wall.png",
+            "textures/portals/sample_door.png",
+            "textures/tilesets/smart/tileset_smart.png",
+            "textures/tilesets/smart_double/tileset_smart_double.png",
+            "textures/tilesets/simple/tileset_simple.png",
+            "textures/objects/sample_barrel.png",
+            "textures/objects/sample_cauldron.png",
+        ];
+
+        for file in expected_files {
+            let path = temp_path.join(id).join(file);
+            assert!(
+                path.exists(),
+                format!("Path '{}' should exist, but does not.", path.display())
+            );
+        }
     }
 
     #[test]
@@ -259,7 +343,7 @@ mod test {
 
         assert_eq!(file.path, path);
         assert_eq!(file.offset, offset as u64);
-        assert_eq!(file.size, size as u64);
+        assert_eq!(file.size, size as usize);
         assert_eq!(file.md5, md5);
     }
 }
