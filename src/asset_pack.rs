@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Context, Result};
 use byteorder::{ReadBytesExt, LE};
 use log::info;
+use serde::Deserialize;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::Formatter;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
@@ -15,6 +17,11 @@ const MD5_BYTES: usize = 16;
 
 const RESOURCE_PATH_PREFIX: &str = "res://";
 const ASSET_PACK_PREFIX: &str = "packs/";
+
+const NAME_KEY: &str = "name";
+const ID_KEY: &str = "name";
+const VERSION_KEY: &str = "version";
+const AUTHOR_KEY: &str = "author";
 
 #[derive(Debug)]
 struct MetaData {
@@ -104,6 +111,14 @@ impl FileMetaData {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct PackInfo {
+    name: String,
+    id: String,
+    version: String,
+    author: String,
+}
+
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
     let mut bytes = vec![0; length];
     data.read_exact(bytes.as_mut_slice())
@@ -141,34 +156,54 @@ pub fn unpack_assets(pack_path: &PathBuf, destination: &PathBuf) -> Result<()> {
     info!("Godot package version: {}", metadata.version);
     info!("Files in package: {}", metadata.files_meta.len());
 
+    let mut maybe_info_file = None;
+
     for meta in metadata.files_meta {
-        let file_path_without_prefixes = meta
-            .path
-            .trim_start_matches(RESOURCE_PATH_PREFIX)
-            .trim_start_matches(ASSET_PACK_PREFIX);
+        let file_path_without_prefixes = PathBuf::from(
+            meta.path
+                .trim_start_matches(RESOURCE_PATH_PREFIX)
+                .trim_start_matches(ASSET_PACK_PREFIX),
+        );
 
         let mut path = destination.clone();
-        path.push(file_path_without_prefixes);
+        path.push(&file_path_without_prefixes);
 
         info!("Unpacking {}", path.display());
 
         // TODO: Check if file path does not exit the target directory.
 
-        unpack_file(&mut pack, meta.size, &path)?;
+        let data = unpack_file(&mut pack, meta.size)?;
+        write_file(&data, &path)?;
+
+        if is_root_json_file(&file_path_without_prefixes) {
+            let json_string = std::str::from_utf8(&data)?;
+            maybe_info_file = Some(serde_json::from_str::<PackInfo>(json_string)?);
+        }
     }
+
+    println!("{:?}", maybe_info_file);
 
     Ok(())
 }
 
-fn unpack_file(data: &mut dyn Read, file_size: usize, file_path: &PathBuf) -> Result<()> {
+fn is_root_json_file(path: &PathBuf) -> bool {
+    path.extension().unwrap_or(OsStr::new("")) == OsStr::new("json")
+        && path.parent() == Some(Path::new(""))
+}
+
+fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
+    let mut file_data = vec![0; file_size];
+    read.read_exact(file_data.as_mut_slice())?;
+
+    Ok(file_data)
+}
+
+fn write_file(data: &Vec<u8>, file_path: &PathBuf) -> Result<()> {
     let folder = file_path.parent().unwrap();
     std::fs::create_dir_all(folder)?;
 
-    let mut file_data = vec![0; file_size];
-    data.read_exact(file_data.as_mut_slice())?;
-
     let mut file = File::create(file_path)?;
-    file.write_all(file_data.as_slice())?;
+    file.write_all(data.as_slice())?;
 
     Ok(())
 }
@@ -183,7 +218,7 @@ fn is_dir_empty(dir: &PathBuf) -> bool {
 #[cfg(test)]
 mod test {
     use crate::asset_pack::{
-        is_dir_empty, is_file_asset_pack, unpack_assets, FileMetaData, MetaData,
+        is_dir_empty, is_file_asset_pack, is_root_json_file, unpack_assets, FileMetaData, MetaData,
         GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
     };
     use byteorder::{WriteBytesExt, LE};
@@ -281,7 +316,8 @@ mod test {
             let path = temp_path.join(id).join(file);
             assert!(
                 path.exists(),
-                format!("Path '{}' should exist, but does not.", path.display())
+                "Path '{}' should exist, but does not.",
+                path.display()
             );
         }
     }
@@ -345,5 +381,12 @@ mod test {
         assert_eq!(file.offset, offset as u64);
         assert_eq!(file.size, size as usize);
         assert_eq!(file.md5, md5);
+    }
+
+    #[test]
+    fn test_is_root_json_file() {
+        assert!(is_root_json_file(&PathBuf::from("8UWKyQPf.json")));
+        assert!(!is_root_json_file(&PathBuf::from("bla/8UWKyQPf.json")));
+        assert!(!is_root_json_file(&PathBuf::from("8UWKyQPf.txt")));
     }
 }
