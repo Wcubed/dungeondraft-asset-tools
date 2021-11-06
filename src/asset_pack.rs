@@ -1,25 +1,26 @@
 use anyhow::{Context, Result};
-use byteorder::{ReadBytesExt, LE};
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use log::info;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::Formatter;
-use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
+const I64: usize = 8;
 const GODOT_METADATA_RESERVED_SPACE: usize = 16 * I32;
 const MD5_BYTES: usize = 16;
 
 const RESOURCE_PATH_PREFIX: &str = "res://";
 const ASSET_PACK_PREFIX: &str = "packs/";
 const PACK_FILE_NAME: &str = "pack.json";
-const TAGS_FILE_NAME: &str = "default.dungeondraft_tags";
+const TAGS_FILE_NAME: &str = "data/default.dungeondraft_tags";
 const OBJECT_FILES_PREFIX: &str = "textures/objects/";
 
 const NAME_KEY: &str = "name";
@@ -32,24 +33,21 @@ pub struct AssetPack {
     pub godot_version: GodotVersion,
     pub meta: PackMeta,
     pub tags: Tags,
-    pub object_files: HashMap<String, FileMetaData>,
-    pub files_meta: HashMap<String, FileMetaData>,
+    pub object_files: HashMap<String, Vec<u8>>,
+    pub other_files: HashMap<String, Vec<u8>>,
 }
 
 impl AssetPack {
     pub fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         data.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
 
-        let version = GodotVersion::from_read(data).context("Could not read godot version")?;
+        let godot_version =
+            GodotVersion::from_read(data).context("Could not read godot version")?;
         data.read_exact(&mut [0; GODOT_METADATA_RESERVED_SPACE])?;
 
         let nr_of_files = data.read_i32::<LE>()? as usize;
 
-        let mut files_meta = HashMap::new();
-        let mut object_files = HashMap::new();
-
-        let mut maybe_pack_meta_file = None;
-        let mut maybe_tags_file = None;
+        let mut files_meta = vec![];
 
         for i in 0..nr_of_files {
             let file_meta = FileMetaData::from_read(data).context(format!(
@@ -58,34 +56,115 @@ impl AssetPack {
                 nr_of_files
             ))?;
 
-            // Root json file `<pack-id>.json`, and `<pack-id>/pack.json` file contain the same data.
-            // So we only need to read one, and can ignore the other.
-            let pathbuf = PathBuf::from(&file_meta.path);
-            if is_root_json_file(&pathbuf) {
-                maybe_pack_meta_file = Some(file_meta);
-            } else if is_tags_file(&pathbuf) {
-                maybe_tags_file = Some(file_meta);
-            } else if is_objects_file(&file_meta.path) {
-                object_files.insert(file_meta.path.clone(), file_meta);
-            } else if !is_pack_file(&pathbuf) {
-                files_meta.insert(file_meta.path.clone(), file_meta);
+            files_meta.push(file_meta);
+        }
+
+        files_meta.sort();
+
+        let mut object_files = HashMap::new();
+        let mut other_files = HashMap::new();
+        let mut maybe_meta = None;
+        let mut maybe_tags = None;
+
+        for meta in files_meta {
+            let mut file_data = vec![0; meta.size];
+            data.read_exact(&mut file_data)?;
+
+            let pathbuf = &PathBuf::from(meta.path.clone());
+
+            // A dungeondraft asset pack for some reason has two json files with identical contents
+            // one is the root json file `packs/<pack-id>.json` and the other
+            // is `packs/<pack-id>/pack.json`. This is why whe ignore the second one
+            // (via `is_pack_file()`)
+            if is_root_json_file(pathbuf) {
+                maybe_meta = Some(serde_json::from_slice(&file_data)?);
+            } else if is_tags_file(&meta.path) {
+                maybe_tags = Some(serde_json::from_slice(&file_data)?);
+            } else if is_objects_file(&meta.path) {
+                object_files.insert(meta.path.clone(), file_data);
+            } else if !is_pack_file(pathbuf) {
+                other_files.insert(meta.path.clone(), file_data);
             }
         }
 
-        let pack_meta_file = maybe_pack_meta_file.unwrap();
-        let tags_file = maybe_tags_file.unwrap();
-
-        let pack_meta = PackMeta::from_read(data, &pack_meta_file)
-            .context("Could not read pack metadata file")?;
-        let tags = Tags::from_read(data, &tags_file).context("Could not read tag file.")?;
-
-        Ok(Self {
-            godot_version: version,
-            meta: pack_meta,
-            tags,
-            files_meta,
+        Ok(AssetPack {
+            godot_version,
+            meta: maybe_meta.unwrap(),
+            tags: maybe_tags.unwrap(),
             object_files,
+            other_files,
         })
+    }
+
+    pub fn to_write<W: Write>(&self, data: &mut W) -> Result<()> {
+        data.write_all(&ASSET_PACK_MAGIC_FILE_HEADER)?;
+        self.godot_version.to_write(data)?;
+        data.write_all(&[0; GODOT_METADATA_RESERVED_SPACE])?;
+
+        let file_path_prefix =
+            RESOURCE_PATH_PREFIX.to_owned() + ASSET_PACK_PREFIX + self.meta.id.as_str();
+
+        let pack_meta_file = serde_json::to_vec(&self.meta)?;
+        let root_pack_file_metadata =
+            FileMetaData::new(file_path_prefix.clone() + ".json", pack_meta_file.len());
+        let pack_file_metadata = FileMetaData::new(
+            file_path_prefix.clone() + "/" + PACK_FILE_NAME,
+            pack_meta_file.len(),
+        );
+
+        let tags_file = serde_json::to_vec(&self.tags)?;
+        let tags_metadata = FileMetaData::new(
+            file_path_prefix.clone() + "/" + TAGS_FILE_NAME,
+            tags_file.len(),
+        );
+
+        let mut files = vec![];
+        // A dungeondraft asset pack for some reason has two json files with identical contents
+        // one is the root json file `packs/<pack-id>.json` and the other
+        // is `packs/<pack-id>/pack.json`.
+        // This is why we add two files with the same content here.
+        files.push((root_pack_file_metadata, &pack_meta_file));
+        files.push((pack_file_metadata, &pack_meta_file));
+        files.push((tags_metadata, &tags_file));
+
+        for (file_path, data) in self.object_files.iter().chain(self.other_files.iter()) {
+            let path_with_prefix = file_path_prefix.clone() + "/" + file_path;
+
+            files.push((FileMetaData::new(path_with_prefix, data.len()), data));
+        }
+
+        data.write_i32::<LE>(files.len() as i32)?;
+
+        let mut file_offset = Self::calculate_files_block_starting_offset(&files);
+
+        for (meta, _) in files.iter_mut() {
+            meta.offset = file_offset as u64;
+            file_offset += meta.size;
+        }
+
+        for (meta, _) in files.iter() {
+            meta.to_write(data)?;
+        }
+
+        for (_, file_data) in files.iter() {
+            data.write_all(file_data)?;
+        }
+
+        Ok(())
+    }
+
+    fn calculate_files_block_starting_offset(files: &Vec<(FileMetaData, &Vec<u8>)>) -> usize {
+        // The i32 is where the amount of files is kept.
+        let mut file_offset = ASSET_PACK_MAGIC_FILE_HEADER.len()
+            + GodotVersion::size_in_bytes()
+            + GODOT_METADATA_RESERVED_SPACE
+            + I32;
+
+        for (meta, _) in files.iter() {
+            file_offset += meta.calculate_binary_size();
+        }
+
+        file_offset
     }
 }
 
@@ -115,6 +194,19 @@ impl GodotVersion {
             revision: data.read_i32::<LE>()?,
         })
     }
+
+    fn to_write<W: Write>(&self, data: &mut W) -> Result<()> {
+        data.write_i32::<LE>(self.version)?;
+        data.write_i32::<LE>(self.major)?;
+        data.write_i32::<LE>(self.minor)?;
+        data.write_i32::<LE>(self.revision)?;
+
+        Ok(())
+    }
+
+    fn size_in_bytes() -> usize {
+        I32 * 4
+    }
 }
 
 impl fmt::Display for GodotVersion {
@@ -127,7 +219,8 @@ impl fmt::Display for GodotVersion {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+/// Comparing two `FileMetaData` will compare their offsets.
 pub struct FileMetaData {
     path: String,
     offset: u64,
@@ -136,6 +229,15 @@ pub struct FileMetaData {
 }
 
 impl FileMetaData {
+    fn new(path: String, size: usize) -> Self {
+        FileMetaData {
+            path,
+            offset: 0,
+            size,
+            md5: [0; MD5_BYTES],
+        }
+    }
+
     /// Strips `res://packs/<pack-id>/` if the file path starts with it.
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         let path_length = data.read_i32::<LE>()? as usize;
@@ -161,9 +263,52 @@ impl FileMetaData {
             md5,
         })
     }
+
+    fn to_write<W: Write>(&self, data: &mut W) -> Result<()> {
+        data.write_i32::<LE>(self.path.len() as i32)?;
+        data.write(self.path.as_bytes())?;
+        data.write_i64::<LE>(self.offset as i64)?;
+        data.write_i64::<LE>(self.size as i64)?;
+
+        data.write_all(&[0; MD5_BYTES])?;
+
+        Ok(())
+    }
+
+    fn calculate_binary_size(&self) -> usize {
+        // An i32 to hold the string size.
+        let mut size = I32;
+
+        size += self.path.len();
+        // Offset and file size
+        size += I64 * 2;
+        size += MD5_BYTES;
+
+        size
+    }
 }
 
-#[derive(Debug, Deserialize)]
+impl Eq for FileMetaData {}
+
+impl PartialEq<Self> for FileMetaData {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset.eq(&other.offset)
+    }
+}
+
+impl PartialOrd<Self> for FileMetaData {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.offset.partial_cmp(&other.offset)
+    }
+}
+
+impl Ord for FileMetaData {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.offset.cmp(&other.offset)
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct PackMeta {
     pub name: String,
     pub id: String,
@@ -172,18 +317,7 @@ pub struct PackMeta {
     pub custom_color_overrides: ColorOverrides,
 }
 
-impl PackMeta {
-    fn from_read<R: Read + Seek>(data: &mut R, file_meta: &FileMetaData) -> Result<Self> {
-        data.seek(SeekFrom::Start(file_meta.offset))?;
-
-        let json_string = read_string(data, file_meta.size)?;
-        let info: Self = serde_json::from_str(json_string.as_str())?;
-
-        Ok(info)
-    }
-}
-
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct ColorOverrides {
     pub enabled: bool,
     pub min_redness: f32,
@@ -191,21 +325,10 @@ pub struct ColorOverrides {
     pub red_tolerance: f32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Tags {
     tags: HashMap<String, Vec<String>>,
     sets: HashMap<String, Vec<String>>,
-}
-
-impl Tags {
-    fn from_read<R: Read + Seek>(data: &mut R, file_meta: &FileMetaData) -> Result<Self> {
-        data.seek(SeekFrom::Start(file_meta.offset))?;
-
-        let json_string = read_string(data, file_meta.size)?;
-        let tags: Self = serde_json::from_str(json_string.as_str())?;
-
-        Ok(tags)
-    }
 }
 
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
@@ -232,7 +355,7 @@ pub fn read_asset_pack(pack_path: &PathBuf) -> Result<AssetPack> {
     let pack = AssetPack::from_read(&mut pack_file).context("Could not read metadata")?;
 
     info!("Godot package version: {}", pack.godot_version);
-    info!("Files in package: {}", pack.files_meta.len());
+    info!("Files in package: {}", pack.other_files.len());
 
     info!("Pack name: {}", pack.meta.name);
     info!("Pack author: {}", pack.meta.author);
@@ -255,9 +378,9 @@ fn is_pack_file(path: &PathBuf) -> bool {
     path.file_name() == Some(OsStr::new(PACK_FILE_NAME))
 }
 
-/// Returns true for `default.dungeondraft_tags` files, regardless of parent dir.
-fn is_tags_file(path: &PathBuf) -> bool {
-    path.file_name() == Some(OsStr::new(TAGS_FILE_NAME))
+/// Returns true for `data/default.dungeondraft_tags` files, regardless of parent dir.
+fn is_tags_file(path: &str) -> bool {
+    path.ends_with(TAGS_FILE_NAME)
 }
 
 /// Returns true if path starts with `textures/objects/`.
@@ -270,23 +393,6 @@ fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
     read.read_exact(file_data.as_mut_slice())?;
 
     Ok(file_data)
-}
-
-fn write_file(data: &Vec<u8>, file_path: &PathBuf) -> Result<()> {
-    let folder = file_path.parent().unwrap();
-    std::fs::create_dir_all(folder)?;
-
-    let mut file = File::create(file_path)?;
-    file.write_all(data.as_slice())?;
-
-    Ok(())
-}
-
-fn is_dir_empty(dir: &PathBuf) -> bool {
-    match dir.read_dir() {
-        Ok(mut iter) => iter.next().is_none(),
-        Err(_) => false,
-    }
 }
 
 #[cfg(test)]

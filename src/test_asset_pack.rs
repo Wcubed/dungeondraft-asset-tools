@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::asset_pack::{AssetPack, GodotVersion};
 use byteorder::{WriteBytesExt, LE};
-use std::io::{Cursor, Seek, Write};
+use std::io::{Cursor, Write};
 
 #[test]
 fn asset_pack_from_read_happy_flow() {
@@ -27,7 +27,27 @@ fn asset_pack_from_read_happy_flow() {
     assert!(pack
         .object_files
         .contains_key("textures/objects/random.png"));
-    assert!(pack.files_meta.contains_key("textures/portals/door.png"));
+    assert!(pack.other_files.contains_key("textures/portals/door.png"));
+}
+
+#[test]
+fn asset_pack_read_write_read_equivalence_check() {
+    let raw_pack = create_raw_test_pack().unwrap();
+    let mut cursor = Cursor::new(raw_pack);
+
+    let pack = AssetPack::from_read(&mut cursor).unwrap();
+
+    let mut written_pack = vec![];
+    pack.to_write(&mut written_pack).unwrap();
+
+    let mut re_read_cursor = Cursor::new(written_pack);
+    let re_read_pack = AssetPack::from_read(&mut re_read_cursor).unwrap();
+
+    assert_eq!(pack.godot_version, re_read_pack.godot_version);
+    assert_eq!(pack.meta, re_read_pack.meta);
+
+    assert_eq!(pack.object_files.len(), re_read_pack.object_files.len());
+    assert_eq!(pack.other_files.len(), re_read_pack.other_files.len());
 }
 
 fn create_raw_test_pack() -> Result<Vec<u8>> {
