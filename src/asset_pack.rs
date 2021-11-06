@@ -18,6 +18,8 @@ const MD5_BYTES: usize = 16;
 
 const RESOURCE_PATH_PREFIX: &str = "res://";
 const ASSET_PACK_PREFIX: &str = "packs/";
+const PACK_FILE_NAME: &str = "pack.json";
+const TAGS_FILE_NAME: &str = "default.dungeondraft_tags";
 
 const NAME_KEY: &str = "name";
 const ID_KEY: &str = "name";
@@ -28,6 +30,7 @@ const AUTHOR_KEY: &str = "author";
 pub struct AssetPack {
     godot_version: GodotVersion,
     meta: PackMeta,
+    tags: Tags,
     files_meta: HashMap<String, FileMetaData>,
 }
 
@@ -41,6 +44,7 @@ impl AssetPack {
         let mut files_meta = HashMap::with_capacity(nr_of_files);
 
         let mut maybe_pack_meta_file = None;
+        let mut maybe_tags_file = None;
 
         for i in 0..nr_of_files {
             let file_meta = FileMetaData::from_read(data).context(format!(
@@ -49,20 +53,28 @@ impl AssetPack {
                 nr_of_files
             ))?;
 
-            if is_root_json_file(&PathBuf::from(&file_meta.path)) {
+            // Root json file `<pack-id>.json`, and `<pack-id>/pack.json` file contain the same data.
+            // So we only need to read one, and can ignore the other.
+            let pathbuf = &PathBuf::from(&file_meta.path);
+            if is_root_json_file(pathbuf) {
                 maybe_pack_meta_file = Some(file_meta);
-            } else {
+            } else if is_tags_file(pathbuf) {
+                maybe_tags_file = Some(file_meta);
+            } else if !is_pack_file(pathbuf) {
                 files_meta.insert(file_meta.path.clone(), file_meta);
             }
         }
 
         let pack_meta_file = maybe_pack_meta_file.unwrap();
+        let tags_file = maybe_tags_file.unwrap();
 
         let pack_meta = PackMeta::from_read(data, &pack_meta_file)?;
+        let tags = Tags::from_read(data, &tags_file)?;
 
         Ok(Self {
             godot_version: version,
             meta: pack_meta,
+            tags,
             files_meta,
         })
     }
@@ -115,12 +127,17 @@ struct FileMetaData {
 }
 
 impl FileMetaData {
+    /// Strips `res://packs/<pack-id>/` if the file path starts with it.
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         let path_length = data.read_i32::<LE>()? as usize;
-        let path = read_string(data, path_length)?
+        let path_with_maybe_pack_id = read_string(data, path_length)?
             .trim_start_matches(RESOURCE_PATH_PREFIX)
             .trim_start_matches(ASSET_PACK_PREFIX)
             .to_owned();
+
+        let (_id, path) = path_with_maybe_pack_id
+            .split_once('/')
+            .unwrap_or(("", path_with_maybe_pack_id.as_str()));
 
         let offset = data.read_i64::<LE>()? as u64;
         let size = data.read_i64::<LE>()? as usize;
@@ -129,7 +146,7 @@ impl FileMetaData {
         data.read_exact(&mut md5)?;
 
         Ok(Self {
-            path,
+            path: path.to_owned(),
             offset,
             size,
             md5,
@@ -143,6 +160,7 @@ struct PackMeta {
     id: String,
     version: String,
     author: String,
+    custom_color_overrides: ColorOverrides,
 }
 
 impl PackMeta {
@@ -153,6 +171,31 @@ impl PackMeta {
         let info: Self = serde_json::from_str(json_string.as_str())?;
 
         Ok(info)
+    }
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+struct ColorOverrides {
+    enabled: bool,
+    min_redness: f32,
+    min_saturation: f32,
+    red_tolerance: f32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tags {
+    tags: HashMap<String, Vec<String>>,
+    sets: HashMap<String, Vec<String>>,
+}
+
+impl Tags {
+    fn from_read<R: Read + Seek>(data: &mut R, file_meta: &FileMetaData) -> Result<Self> {
+        data.seek(SeekFrom::Start(file_meta.offset))?;
+
+        let json_string = read_string(data, file_meta.size)?;
+        let tags: Self = serde_json::from_str(json_string.as_str())?;
+
+        Ok(tags)
     }
 }
 
@@ -190,12 +233,25 @@ pub fn read_asset_pack(pack_path: &PathBuf) -> Result<AssetPack> {
     info!("Pack version: {}", pack.meta.version);
     info!("Pack id: {}", pack.meta.id);
 
+    info!("Tags: {:?}", pack.tags);
+
     Ok(pack)
 }
 
+/// Returns true for `<pack-id>.json` files without any parent directory.
 fn is_root_json_file(path: &PathBuf) -> bool {
     path.extension().unwrap_or(OsStr::new("")) == OsStr::new("json")
         && path.parent() == Some(Path::new(""))
+}
+
+/// Returns true for `pack.json` files, regardless of parent directory.
+fn is_pack_file(path: &PathBuf) -> bool {
+    path.file_name() == Some(OsStr::new(PACK_FILE_NAME))
+}
+
+/// Returns true for `default.dungeondraft_tags` files, regardless of parent dir.
+fn is_tags_file(path: &PathBuf) -> bool {
+    path.file_name() == Some(OsStr::new(TAGS_FILE_NAME))
 }
 
 fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
@@ -226,7 +282,7 @@ fn is_dir_empty(dir: &PathBuf) -> bool {
 mod test {
     use crate::asset_pack::{
         is_dir_empty, is_file_asset_pack, is_root_json_file, read_asset_pack, AssetPack,
-        FileMetaData, GodotVersion, GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
+        ColorOverrides, FileMetaData, GodotVersion, GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
     };
     use byteorder::{WriteBytesExt, LE};
     use log::LevelFilter;
@@ -284,13 +340,17 @@ mod test {
         assert_eq!(pack.meta.author, "megasploot");
         assert_eq!(pack.meta.id, expected_id);
 
+        let colors = pack.meta.custom_color_overrides;
+        assert!(!colors.enabled);
+        assert_eq!(colors.min_redness, 0.1);
+        assert_eq!(colors.min_saturation, 0.0);
+        assert_eq!(colors.red_tolerance, 0.04);
+
         let expected_files = vec![
             "data/walls/sample_wall.dungeondraft_wall",
-            "data/default.dungeondraft_tags",
             "data/tilesets/tileset_smart.dungeondraft_tileset",
             "data/tilesets/tileset_smart_double.dungeondraft_tileset",
             "data/tilesets/tileset_simple.dungeondraft_tileset",
-            "pack.json",
             "textures/paths/sample_path.png",
             "textures/paths/streak.png",
             "textures/lights/sample_light.png",
@@ -309,21 +369,17 @@ mod test {
         ];
 
         for file in expected_files {
-            let mut path_with_id = String::from(expected_id);
-            path_with_id.push('/');
-            path_with_id.push_str(file);
-
             assert!(
-                pack.files_meta.contains_key(&path_with_id),
+                pack.files_meta.contains_key(&file.to_owned()),
                 "Pack should contain file '{}', but does not",
-                path_with_id
+                file
             );
         }
     }
 
     #[test]
     fn packed_file_from_read() {
-        let path = String::from("res://test/bla.txt");
+        let path = String::from("res://X3DLFK/test/bla.txt");
         let offset = 12;
         let size = 987;
         let md5 = [12; MD5_BYTES];
