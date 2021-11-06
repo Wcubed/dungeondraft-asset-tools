@@ -1,10 +1,12 @@
 #![cfg(test)]
 
-use anyhow::Result;
-
-use crate::asset_pack::{AssetPack, GodotVersion};
-use byteorder::{WriteBytesExt, LE};
 use std::io::{Cursor, Write};
+
+use anyhow::Result;
+use byteorder::{WriteBytesExt, LE};
+
+use crate::asset_pack::godot_version::GodotVersion;
+use crate::asset_pack::AssetPack;
 
 #[test]
 fn asset_pack_from_read_happy_flow() {

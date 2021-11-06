@@ -1,15 +1,20 @@
+use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::io::{Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
 use anyhow::{Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::cmp::Ordering;
-use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::fmt;
-use std::fmt::Formatter;
-use std::io::{Cursor, Read, Write};
-use std::io::{Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+
+use file_meta_data::FileMetaData;
+use godot_version::GodotVersion;
+
+mod file_meta_data;
+mod godot_version;
+mod test_asset_pack;
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
@@ -168,146 +173,6 @@ impl AssetPack {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct GodotVersion {
-    version: i32,
-    major: i32,
-    minor: i32,
-    revision: i32,
-}
-
-impl GodotVersion {
-    pub fn new(version: i32, major: i32, minor: i32, revision: i32) -> Self {
-        Self {
-            version,
-            major,
-            minor,
-            revision,
-        }
-    }
-
-    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
-        Ok(Self {
-            version: data.read_i32::<LE>()?,
-            major: data.read_i32::<LE>()?,
-            minor: data.read_i32::<LE>()?,
-            revision: data.read_i32::<LE>()?,
-        })
-    }
-
-    fn to_write<W: Write>(&self, data: &mut W) -> Result<()> {
-        data.write_i32::<LE>(self.version)?;
-        data.write_i32::<LE>(self.major)?;
-        data.write_i32::<LE>(self.minor)?;
-        data.write_i32::<LE>(self.revision)?;
-
-        Ok(())
-    }
-
-    fn size_in_bytes() -> usize {
-        I32 * 4
-    }
-}
-
-impl fmt::Display for GodotVersion {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}.{}.{}.{}",
-            self.version, self.major, self.minor, self.revision
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-/// Comparing two `FileMetaData` will compare their offsets.
-pub struct FileMetaData {
-    path: String,
-    offset: u64,
-    size: usize,
-    md5: [u8; MD5_BYTES],
-}
-
-impl FileMetaData {
-    fn new(path: String, size: usize) -> Self {
-        FileMetaData {
-            path,
-            offset: 0,
-            size,
-            md5: [0; MD5_BYTES],
-        }
-    }
-
-    /// Strips `res://packs/<pack-id>/` if the file path starts with it.
-    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
-        let path_length = data.read_i32::<LE>()? as usize;
-        let path_with_maybe_pack_id = read_string(data, path_length)?
-            .trim_start_matches(RESOURCE_PATH_PREFIX)
-            .trim_start_matches(ASSET_PACK_PREFIX)
-            .to_owned();
-
-        let (_id, path) = path_with_maybe_pack_id
-            .split_once('/')
-            .unwrap_or(("", path_with_maybe_pack_id.as_str()));
-
-        let offset = data.read_i64::<LE>()? as u64;
-        let size = data.read_i64::<LE>()? as usize;
-
-        let mut md5 = [0; MD5_BYTES];
-        data.read_exact(&mut md5)?;
-
-        Ok(Self {
-            path: path.to_owned(),
-            offset,
-            size,
-            md5,
-        })
-    }
-
-    fn to_write<W: Write>(&self, data: &mut W) -> Result<()> {
-        data.write_i32::<LE>(self.path.len() as i32)?;
-        data.write(self.path.as_bytes())?;
-        data.write_i64::<LE>(self.offset as i64)?;
-        data.write_i64::<LE>(self.size as i64)?;
-
-        data.write_all(&[0; MD5_BYTES])?;
-
-        Ok(())
-    }
-
-    fn calculate_binary_size(&self) -> usize {
-        // An i32 to hold the string size.
-        let mut size = I32;
-
-        size += self.path.len();
-        // Offset and file size
-        size += I64 * 2;
-        size += MD5_BYTES;
-
-        size
-    }
-}
-
-impl Eq for FileMetaData {}
-
-impl PartialEq<Self> for FileMetaData {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset.eq(&other.offset)
-    }
-}
-
-impl PartialOrd<Self> for FileMetaData {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.offset.partial_cmp(&other.offset)
-    }
-}
-
-impl Ord for FileMetaData {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.offset.cmp(&other.offset)
-    }
-}
-
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 pub struct PackMeta {
     pub name: String,
@@ -397,10 +262,13 @@ fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod test {
-    use crate::asset_pack::{is_root_json_file, FileMetaData, MD5_BYTES};
-    use byteorder::{WriteBytesExt, LE};
     use std::io::{Cursor, Write};
     use std::path::PathBuf;
+
+    use byteorder::{WriteBytesExt, LE};
+
+    use crate::asset_pack::file_meta_data::FileMetaData;
+    use crate::asset_pack::{is_root_json_file, MD5_BYTES};
 
     #[test]
     fn packed_file_from_read() {
