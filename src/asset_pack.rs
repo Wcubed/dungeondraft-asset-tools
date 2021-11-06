@@ -38,6 +38,8 @@ pub struct AssetPack {
 
 impl AssetPack {
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
+        data.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
+
         let version = GodotVersion::from_read(data).context("Could not read godot version")?;
         data.read_exact(&mut [0; GODOT_METADATA_RESERVED_SPACE])?;
 
@@ -226,9 +228,6 @@ pub fn read_asset_pack(pack_path: &PathBuf) -> Result<AssetPack> {
     info!("Reading '{}'", pack_path.display());
 
     let mut pack_file = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
-
-    pack_file.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
-
     let pack = AssetPack::from_read(&mut pack_file).context("Could not read metadata")?;
 
     info!("Godot package version: {}", pack.godot_version);
