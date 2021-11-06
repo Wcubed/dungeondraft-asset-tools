@@ -30,6 +30,29 @@ fn asset_pack_from_read_happy_flow() {
         .object_files
         .contains_key("textures/objects/random.png"));
     assert!(pack.other_files.contains_key("textures/portals/door.png"));
+
+    let tags = pack.tags.tags;
+
+    assert_eq!(tags.len(), 2);
+    assert!(tags.contains_key("MyTag"));
+    assert!(tags.contains_key("Colorable"));
+    assert_eq!(tags.get("MyTag").unwrap().len(), 1);
+    assert_eq!(tags.get("Colorable").unwrap().len(), 1);
+    assert!(tags
+        .get("MyTag")
+        .unwrap()
+        .contains("textures/objects/random.png"));
+    assert!(tags
+        .get("Colorable")
+        .unwrap()
+        .contains("textures/objects/sample_cauldron.png"));
+
+    let tag_sets = pack.tags.sets;
+
+    assert_eq!(tag_sets.len(), 1);
+    assert!(tag_sets.contains_key("Example Set"));
+    assert_eq!(tag_sets.get("Example Set").unwrap().len(), 1);
+    assert!(tag_sets.get("Example Set").unwrap().contains("MyTag"));
 }
 
 #[test]
@@ -50,6 +73,8 @@ fn asset_pack_read_write_read_equivalence_check() {
 
     assert_eq!(pack.object_files.len(), re_read_pack.object_files.len());
     assert_eq!(pack.other_files.len(), re_read_pack.other_files.len());
+
+    assert_eq!(pack.tags, re_read_pack.tags);
 }
 
 fn create_raw_test_pack() -> Result<Vec<u8>> {

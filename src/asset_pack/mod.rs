@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
@@ -14,7 +14,7 @@ use godot_version::GodotVersion;
 
 mod file_meta_data;
 mod godot_version;
-mod test_asset_pack;
+mod test_asset_pack_serialization;
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
 const I32: usize = 4;
@@ -171,6 +171,71 @@ impl AssetPack {
 
         file_offset
     }
+
+    /// Does the following operations, in the given order:
+    /// - Removes non-existing objects from tags.
+    /// - Removes empty tags.
+    /// - Removes non existing tags from tag sets.
+    /// - Removes empty tag sets.
+    pub fn clean_tags(&mut self) {
+        let mut empty_tags = vec![];
+
+        for (tag, files) in self.tags.tags.iter_mut() {
+            let mut not_existing_files = vec![];
+
+            for file in files.iter() {
+                if !self.object_files.contains_key(file) {
+                    not_existing_files.push(file.clone());
+                }
+            }
+
+            for file in not_existing_files {
+                info!(
+                    "Removing file '{}' from tag '{}' because it does not exist.",
+                    file, tag
+                );
+                files.remove(&file);
+            }
+
+            if files.is_empty() {
+                empty_tags.push(tag.clone());
+            }
+        }
+
+        for tag in empty_tags {
+            info!("Removing tag '{}' because it is empty.", tag);
+            self.tags.tags.remove(&tag);
+        }
+
+        let mut empty_sets = vec![];
+
+        for (set, tags) in self.tags.sets.iter_mut() {
+            let mut not_existing_tags = vec![];
+
+            for tag in tags.iter() {
+                if !self.tags.tags.contains_key(tag) {
+                    not_existing_tags.push(tag.clone());
+                }
+            }
+
+            for tag in not_existing_tags {
+                info!(
+                    "Removing tag '{}' from set '{}' because it does not exist.",
+                    tag, set
+                );
+                tags.remove(&tag);
+            }
+
+            if tags.is_empty() {
+                empty_sets.push(set.clone());
+            }
+        }
+
+        for set in empty_sets {
+            info!("Removing set '{}' because it is empty.", set);
+            self.tags.sets.remove(&set);
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -190,10 +255,10 @@ pub struct ColorOverrides {
     pub red_tolerance: f32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct Tags {
-    tags: HashMap<String, Vec<String>>,
-    sets: HashMap<String, Vec<String>>,
+    tags: HashMap<String, HashSet<String>>,
+    sets: HashMap<String, HashSet<String>>,
 }
 
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
@@ -262,13 +327,18 @@ fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod test {
-    use std::io::{Cursor, Write};
+    use std::collections::{HashMap, HashSet};
+    use std::io::{empty, Cursor, Write};
+    use std::iter::FromIterator;
     use std::path::PathBuf;
 
     use byteorder::{WriteBytesExt, LE};
 
     use crate::asset_pack::file_meta_data::FileMetaData;
-    use crate::asset_pack::{is_root_json_file, MD5_BYTES};
+    use crate::asset_pack::godot_version::GodotVersion;
+    use crate::asset_pack::{
+        is_root_json_file, AssetPack, ColorOverrides, PackMeta, Tags, MD5_BYTES,
+    };
 
     #[test]
     fn packed_file_from_read() {
@@ -298,5 +368,69 @@ mod test {
         assert!(is_root_json_file(&PathBuf::from("8UWKyQPf.json")));
         assert!(!is_root_json_file(&PathBuf::from("bla/8UWKyQPf.json")));
         assert!(!is_root_json_file(&PathBuf::from("8UWKyQPf.txt")));
+    }
+
+    #[test]
+    fn test_clean_tags() {
+        let rock_file = "textures/objects/rock.png".to_string();
+
+        let mut pack = new_empty_pack();
+        pack.tags.tags.insert(
+            "rocks".to_string(),
+            HashSet::from_iter(vec![rock_file.clone(), "does_not_exist.jpg".to_string()]),
+        );
+        pack.tags.tags.insert("empty".to_string(), HashSet::new());
+
+        pack.tags.sets.insert("empty".to_string(), HashSet::new());
+        pack.tags.sets.insert(
+            "will_be_empty".to_string(),
+            HashSet::from_iter(vec!["empty".to_string()]),
+        );
+        pack.tags.sets.insert(
+            "loses_one_tag".to_string(),
+            HashSet::from_iter(vec!["rocks".to_string(), "empty".to_string()]),
+        );
+
+        pack.object_files.insert(rock_file.clone(), vec![]);
+
+        pack.clean_tags();
+
+        assert!(!pack.tags.tags.contains_key("empty"));
+        assert!(pack.tags.tags.contains_key("rocks"));
+        let rock_tags = pack.tags.tags.get("rocks").unwrap();
+
+        assert_eq!(rock_tags.len(), 1);
+        assert!(rock_tags.contains(&rock_file));
+
+        assert_eq!(pack.tags.sets.len(), 1);
+        assert!(pack.tags.sets.contains_key("loses_one_tag"));
+
+        let one_tag_set = pack.tags.sets.get("loses_one_tag").unwrap();
+        assert_eq!(one_tag_set.len(), 1);
+        assert!(one_tag_set.contains("rocks"));
+    }
+
+    fn new_empty_pack() -> AssetPack {
+        AssetPack {
+            godot_version: GodotVersion::new(0, 0, 0, 0),
+            meta: PackMeta {
+                name: "".to_string(),
+                id: "".to_string(),
+                version: "".to_string(),
+                author: "".to_string(),
+                custom_color_overrides: ColorOverrides {
+                    enabled: false,
+                    min_redness: 0.0,
+                    min_saturation: 0.0,
+                    red_tolerance: 0.0,
+                },
+            },
+            tags: Tags {
+                tags: Default::default(),
+                sets: Default::default(),
+            },
+            object_files: Default::default(),
+            other_files: Default::default(),
+        }
     }
 }
