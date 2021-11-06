@@ -20,6 +20,7 @@ const RESOURCE_PATH_PREFIX: &str = "res://";
 const ASSET_PACK_PREFIX: &str = "packs/";
 const PACK_FILE_NAME: &str = "pack.json";
 const TAGS_FILE_NAME: &str = "default.dungeondraft_tags";
+const OBJECT_FILES_PREFIX: &str = "textures/objects/";
 
 const NAME_KEY: &str = "name";
 const ID_KEY: &str = "name";
@@ -31,6 +32,7 @@ pub struct AssetPack {
     godot_version: GodotVersion,
     meta: PackMeta,
     tags: Tags,
+    object_files: HashMap<String, FileMetaData>,
     files_meta: HashMap<String, FileMetaData>,
 }
 
@@ -41,7 +43,8 @@ impl AssetPack {
 
         let nr_of_files = data.read_i32::<LE>()? as usize;
 
-        let mut files_meta = HashMap::with_capacity(nr_of_files);
+        let mut files_meta = HashMap::new();
+        let mut object_files = HashMap::new();
 
         let mut maybe_pack_meta_file = None;
         let mut maybe_tags_file = None;
@@ -55,12 +58,14 @@ impl AssetPack {
 
             // Root json file `<pack-id>.json`, and `<pack-id>/pack.json` file contain the same data.
             // So we only need to read one, and can ignore the other.
-            let pathbuf = &PathBuf::from(&file_meta.path);
-            if is_root_json_file(pathbuf) {
+            let pathbuf = PathBuf::from(&file_meta.path);
+            if is_root_json_file(&pathbuf) {
                 maybe_pack_meta_file = Some(file_meta);
-            } else if is_tags_file(pathbuf) {
+            } else if is_tags_file(&pathbuf) {
                 maybe_tags_file = Some(file_meta);
-            } else if !is_pack_file(pathbuf) {
+            } else if is_objects_file(&file_meta.path) {
+                object_files.insert(file_meta.path.clone(), file_meta);
+            } else if !is_pack_file(&pathbuf) {
                 files_meta.insert(file_meta.path.clone(), file_meta);
             }
         }
@@ -76,6 +81,7 @@ impl AssetPack {
             meta: pack_meta,
             tags,
             files_meta,
+            object_files,
         })
     }
 }
@@ -254,6 +260,11 @@ fn is_tags_file(path: &PathBuf) -> bool {
     path.file_name() == Some(OsStr::new(TAGS_FILE_NAME))
 }
 
+/// Returns true if path starts with `textures/objects/`.
+fn is_objects_file(path: &str) -> bool {
+    path.starts_with(OBJECT_FILES_PREFIX)
+}
+
 fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
     let mut file_data = vec![0; file_size];
     read.read_exact(file_data.as_mut_slice())?;
@@ -364,14 +375,25 @@ mod test {
             "textures/tilesets/smart/tileset_smart.png",
             "textures/tilesets/smart_double/tileset_smart_double.png",
             "textures/tilesets/simple/tileset_simple.png",
-            "textures/objects/sample_barrel.png",
-            "textures/objects/sample_cauldron.png",
         ];
 
         for file in expected_files {
             assert!(
                 pack.files_meta.contains_key(&file.to_owned()),
                 "Pack should contain file '{}', but does not",
+                file
+            );
+        }
+
+        let expected_object_files = vec![
+            "textures/objects/sample_barrel.png",
+            "textures/objects/sample_cauldron.png",
+        ];
+
+        for file in expected_object_files {
+            assert!(
+                pack.object_files.contains_key(&file.to_owned()),
+                "Pack should contain object file '{}', but does not",
                 file
             );
         }
