@@ -1,7 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use byteorder::{ReadBytesExt, LE};
 use log::info;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fmt::Formatter;
@@ -24,19 +25,23 @@ const VERSION_KEY: &str = "version";
 const AUTHOR_KEY: &str = "author";
 
 #[derive(Debug)]
-struct MetaData {
-    version: GodotVersion,
-    files_meta: Vec<FileMetaData>,
+pub struct AssetPack {
+    godot_version: GodotVersion,
+    meta: PackMeta,
+    files_meta: HashMap<String, FileMetaData>,
 }
 
-impl MetaData {
+impl AssetPack {
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         let version = GodotVersion::from_read(data).context("Could not read godot version")?;
         data.read_exact(&mut [0; GODOT_METADATA_RESERVED_SPACE])?;
 
         let nr_of_files = data.read_i32::<LE>()? as usize;
 
-        let mut files_meta = Vec::with_capacity(nr_of_files);
+        let mut files_meta = HashMap::with_capacity(nr_of_files);
+
+        let mut maybe_pack_meta_file = None;
+
         for i in 0..nr_of_files {
             let file_meta = FileMetaData::from_read(data).context(format!(
                 "Could not read file metadata of file {} from {}",
@@ -44,17 +49,26 @@ impl MetaData {
                 nr_of_files
             ))?;
 
-            files_meta.push(file_meta);
+            if is_root_json_file(&PathBuf::from(&file_meta.path)) {
+                maybe_pack_meta_file = Some(file_meta);
+            } else {
+                files_meta.insert(file_meta.path.clone(), file_meta);
+            }
         }
 
+        let pack_meta_file = maybe_pack_meta_file.unwrap();
+
+        let pack_meta = PackMeta::from_read(data, &pack_meta_file)?;
+
         Ok(Self {
-            version,
+            godot_version: version,
+            meta: pack_meta,
             files_meta,
         })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct GodotVersion {
     version: i32,
     major: i32,
@@ -63,6 +77,15 @@ struct GodotVersion {
 }
 
 impl GodotVersion {
+    fn new(version: i32, major: i32, minor: i32, revision: i32) -> Self {
+        Self {
+            version,
+            major,
+            minor,
+            revision,
+        }
+    }
+
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         Ok(Self {
             version: data.read_i32::<LE>()?,
@@ -94,7 +117,10 @@ struct FileMetaData {
 impl FileMetaData {
     fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         let path_length = data.read_i32::<LE>()? as usize;
-        let path = read_string(data, path_length)?;
+        let path = read_string(data, path_length)?
+            .trim_start_matches(RESOURCE_PATH_PREFIX)
+            .trim_start_matches(ASSET_PACK_PREFIX)
+            .to_owned();
 
         let offset = data.read_i64::<LE>()? as u64;
         let size = data.read_i64::<LE>()? as usize;
@@ -112,11 +138,22 @@ impl FileMetaData {
 }
 
 #[derive(Debug, Deserialize)]
-struct PackInfo {
+struct PackMeta {
     name: String,
     id: String,
     version: String,
     author: String,
+}
+
+impl PackMeta {
+    fn from_read<R: Read + Seek>(data: &mut R, file_meta: &FileMetaData) -> Result<Self> {
+        data.seek(SeekFrom::Start(file_meta.offset))?;
+
+        let json_string = read_string(data, file_meta.size)?;
+        let info: Self = serde_json::from_str(json_string.as_str())?;
+
+        Ok(info)
+    }
 }
 
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
@@ -136,54 +173,24 @@ fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
     Ok(magic_file_number == ASSET_PACK_MAGIC_FILE_HEADER)
 }
 
-pub fn unpack_assets(pack_path: &PathBuf, destination: &PathBuf) -> Result<()> {
-    if !is_dir_empty(destination) {
-        return Err(anyhow!("Destination directory is not empty"));
-    }
+pub fn read_asset_pack(pack_path: &PathBuf) -> Result<AssetPack> {
+    info!("Reading '{}'", pack_path.display());
 
-    info!(
-        "Unpacking {} into {}",
-        pack_path.display(),
-        destination.display()
-    );
+    let mut pack_file = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
 
-    let mut pack = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
+    pack_file.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
 
-    pack.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
+    let pack = AssetPack::from_read(&mut pack_file).context("Could not read metadata")?;
 
-    let metadata = MetaData::from_read(&mut pack).context("Could not read metadata")?;
+    info!("Godot package version: {}", pack.godot_version);
+    info!("Files in package: {}", pack.files_meta.len());
 
-    info!("Godot package version: {}", metadata.version);
-    info!("Files in package: {}", metadata.files_meta.len());
+    info!("Pack name: {}", pack.meta.name);
+    info!("Pack author: {}", pack.meta.author);
+    info!("Pack version: {}", pack.meta.version);
+    info!("Pack id: {}", pack.meta.id);
 
-    let mut maybe_info_file = None;
-
-    for meta in metadata.files_meta {
-        let file_path_without_prefixes = PathBuf::from(
-            meta.path
-                .trim_start_matches(RESOURCE_PATH_PREFIX)
-                .trim_start_matches(ASSET_PACK_PREFIX),
-        );
-
-        let mut path = destination.clone();
-        path.push(&file_path_without_prefixes);
-
-        info!("Unpacking {}", path.display());
-
-        // TODO: Check if file path does not exit the target directory.
-
-        let data = unpack_file(&mut pack, meta.size)?;
-        write_file(&data, &path)?;
-
-        if is_root_json_file(&file_path_without_prefixes) {
-            let json_string = std::str::from_utf8(&data)?;
-            maybe_info_file = Some(serde_json::from_str::<PackInfo>(json_string)?);
-        }
-    }
-
-    println!("{:?}", maybe_info_file);
-
-    Ok(())
+    Ok(pack)
 }
 
 fn is_root_json_file(path: &PathBuf) -> bool {
@@ -218,13 +225,12 @@ fn is_dir_empty(dir: &PathBuf) -> bool {
 #[cfg(test)]
 mod test {
     use crate::asset_pack::{
-        is_dir_empty, is_file_asset_pack, is_root_json_file, unpack_assets, FileMetaData, MetaData,
-        GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
+        is_dir_empty, is_file_asset_pack, is_root_json_file, read_asset_pack, AssetPack,
+        FileMetaData, GodotVersion, GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
     };
     use byteorder::{WriteBytesExt, LE};
     use log::LevelFilter;
     use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
-    use std::fs::File;
     use std::io::{Cursor, Write};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -260,18 +266,7 @@ mod test {
     }
 
     #[test]
-    fn unpack_assets_refuse_to_unpack_in_non_empty_directory() {
-        let temp = tempdir().unwrap();
-
-        let file = temp.path().join("dir_not_empty.txt");
-        File::create(file).unwrap();
-
-        let result = unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp.into_path());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn unpack_assets_happy_flow() {
+    fn read_asset_pack_happy_flow() {
         TermLogger::init(
             LevelFilter::Debug,
             Config::default(),
@@ -280,14 +275,15 @@ mod test {
         )
         .unwrap();
 
-        let temp = tempdir().unwrap();
-        let temp_path = temp.into_path();
+        let pack = read_asset_pack(&PathBuf::from(EXAMPLE_PACK)).unwrap();
 
-        unpack_assets(&PathBuf::from(EXAMPLE_PACK), &temp_path).unwrap();
+        let expected_id = "8UWKyQPf";
 
-        assert!(temp_path.join("8UWKyQPf.json").exists());
+        assert_eq!(pack.godot_version, GodotVersion::new(1, 3, 2, 1));
+        assert_eq!(pack.meta.name, "example_pack");
+        assert_eq!(pack.meta.author, "megasploot");
+        assert_eq!(pack.meta.id, expected_id);
 
-        let id = "8UWKyQPf";
         let expected_files = vec![
             "data/walls/sample_wall.dungeondraft_wall",
             "data/default.dungeondraft_tags",
@@ -313,51 +309,16 @@ mod test {
         ];
 
         for file in expected_files {
-            let path = temp_path.join(id).join(file);
+            let mut path_with_id = String::from(expected_id);
+            path_with_id.push('/');
+            path_with_id.push_str(file);
+
             assert!(
-                path.exists(),
-                "Path '{}' should exist, but does not.",
-                path.display()
+                pack.files_meta.contains_key(&path_with_id),
+                "Pack should contain file '{}', but does not",
+                path_with_id
             );
         }
-    }
-
-    #[test]
-    fn metadata_from_read() {
-        let mut data = vec![];
-        data.write_i32::<LE>(2).unwrap();
-        data.write_i32::<LE>(1).unwrap();
-        data.write_i32::<LE>(19).unwrap();
-        data.write_i32::<LE>(12).unwrap();
-
-        data.write_all(&[0; GODOT_METADATA_RESERVED_SPACE as usize])
-            .unwrap();
-
-        let file_amount = 10;
-        data.write_i32::<LE>(file_amount).unwrap();
-
-        let path = String::from("res://something/something_else/filename.txt");
-        let offset = 110;
-        let size = 12;
-        let md5 = [230; MD5_BYTES];
-
-        for _ in 0..file_amount {
-            data.write_i32::<LE>(path.len() as i32).unwrap();
-            data.write_all(path.as_bytes()).unwrap();
-            data.write_i64::<LE>(offset).unwrap();
-            data.write_i64::<LE>(size).unwrap();
-            data.write_all(&md5).unwrap();
-        }
-
-        let mut cursor = Cursor::new(data);
-        let meta = MetaData::from_read(&mut cursor).unwrap();
-
-        assert_eq!(meta.version.version, 2);
-        assert_eq!(meta.version.major, 1);
-        assert_eq!(meta.version.minor, 19);
-        assert_eq!(meta.version.revision, 12);
-
-        assert_eq!(meta.files_meta.len(), file_amount as usize);
     }
 
     #[test]
@@ -377,7 +338,7 @@ mod test {
         let mut cursor = Cursor::new(data);
         let file = FileMetaData::from_read(&mut cursor).unwrap();
 
-        assert_eq!(file.path, path);
+        assert_eq!(file.path, "test/bla.txt");
         assert_eq!(file.offset, offset as u64);
         assert_eq!(file.size, size as usize);
         assert_eq!(file.md5, md5);
