@@ -8,7 +8,7 @@ The format is as follows:
 - Int32: Number of files in archive
 - For each file:
   - Int32: Length of path string
-  - String: Path as string, e.g. res://actors/Enemy/enemy.atex
+  - String: Path as string, e.g. res://packs/XKLS89KL/pack.json
   - Int64: File offset
   - Int64: File size
   - 16 bytes: MD5

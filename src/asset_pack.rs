@@ -29,15 +29,15 @@ const AUTHOR_KEY: &str = "author";
 
 #[derive(Debug)]
 pub struct AssetPack {
-    godot_version: GodotVersion,
-    meta: PackMeta,
-    tags: Tags,
-    object_files: HashMap<String, FileMetaData>,
-    files_meta: HashMap<String, FileMetaData>,
+    pub godot_version: GodotVersion,
+    pub meta: PackMeta,
+    pub tags: Tags,
+    pub object_files: HashMap<String, FileMetaData>,
+    pub files_meta: HashMap<String, FileMetaData>,
 }
 
 impl AssetPack {
-    fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
+    pub fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
         data.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
 
         let version = GodotVersion::from_read(data).context("Could not read godot version")?;
@@ -75,8 +75,9 @@ impl AssetPack {
         let pack_meta_file = maybe_pack_meta_file.unwrap();
         let tags_file = maybe_tags_file.unwrap();
 
-        let pack_meta = PackMeta::from_read(data, &pack_meta_file)?;
-        let tags = Tags::from_read(data, &tags_file)?;
+        let pack_meta = PackMeta::from_read(data, &pack_meta_file)
+            .context("Could not read pack metadata file")?;
+        let tags = Tags::from_read(data, &tags_file).context("Could not read tag file.")?;
 
         Ok(Self {
             godot_version: version,
@@ -89,7 +90,7 @@ impl AssetPack {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct GodotVersion {
+pub struct GodotVersion {
     version: i32,
     major: i32,
     minor: i32,
@@ -97,7 +98,7 @@ struct GodotVersion {
 }
 
 impl GodotVersion {
-    fn new(version: i32, major: i32, minor: i32, revision: i32) -> Self {
+    pub fn new(version: i32, major: i32, minor: i32, revision: i32) -> Self {
         Self {
             version,
             major,
@@ -127,7 +128,7 @@ impl fmt::Display for GodotVersion {
 }
 
 #[derive(Debug)]
-struct FileMetaData {
+pub struct FileMetaData {
     path: String,
     offset: u64,
     size: usize,
@@ -163,12 +164,12 @@ impl FileMetaData {
 }
 
 #[derive(Debug, Deserialize)]
-struct PackMeta {
-    name: String,
-    id: String,
-    version: String,
-    author: String,
-    custom_color_overrides: ColorOverrides,
+pub struct PackMeta {
+    pub name: String,
+    pub id: String,
+    pub version: String,
+    pub author: String,
+    pub custom_color_overrides: ColorOverrides,
 }
 
 impl PackMeta {
@@ -183,15 +184,15 @@ impl PackMeta {
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
-struct ColorOverrides {
-    enabled: bool,
-    min_redness: f32,
-    min_saturation: f32,
-    red_tolerance: f32,
+pub struct ColorOverrides {
+    pub enabled: bool,
+    pub min_redness: f32,
+    pub min_saturation: f32,
+    pub red_tolerance: f32,
 }
 
 #[derive(Debug, Deserialize)]
-struct Tags {
+pub struct Tags {
     tags: HashMap<String, Vec<String>>,
     sets: HashMap<String, Vec<String>>,
 }
@@ -290,113 +291,10 @@ fn is_dir_empty(dir: &PathBuf) -> bool {
 
 #[cfg(test)]
 mod test {
-    use crate::asset_pack::{
-        is_dir_empty, is_file_asset_pack, is_root_json_file, read_asset_pack, AssetPack,
-        ColorOverrides, FileMetaData, GodotVersion, GODOT_METADATA_RESERVED_SPACE, MD5_BYTES,
-    };
+    use crate::asset_pack::{is_root_json_file, FileMetaData, MD5_BYTES};
     use byteorder::{WriteBytesExt, LE};
-    use log::LevelFilter;
-    use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
     use std::io::{Cursor, Write};
     use std::path::PathBuf;
-    use tempfile::tempdir;
-
-    const EXAMPLE_PACK: &str = "test_files/example_pack.dungeondraft_pack";
-    const NOT_A_PACK: &str = "test_files/not_a_pack.txt";
-
-    #[test]
-    fn is_asset_pack_with_example_pack() {
-        assert!(is_file_asset_pack(&PathBuf::from(EXAMPLE_PACK)).unwrap());
-    }
-
-    #[test]
-    fn is_asset_pack_with_not_a_pack() {
-        assert!(!is_file_asset_pack(&PathBuf::from(NOT_A_PACK)).unwrap());
-    }
-
-    #[test]
-    fn is_dir_empty_empty_dir() {
-        let temp = tempdir().unwrap();
-
-        assert!(is_dir_empty(&temp.into_path()));
-    }
-
-    #[test]
-    fn is_dir_empty_full_dir() {
-        let temp = tempdir().unwrap();
-
-        let file = temp.path().join("dir_not_empty.txt");
-        std::fs::File::create(file).unwrap();
-
-        assert!(!is_dir_empty(&temp.into_path()));
-    }
-
-    #[test]
-    fn read_asset_pack_happy_flow() {
-        TermLogger::init(
-            LevelFilter::Debug,
-            Config::default(),
-            TerminalMode::Mixed,
-            ColorChoice::Auto,
-        )
-        .unwrap();
-
-        let pack = read_asset_pack(&PathBuf::from(EXAMPLE_PACK)).unwrap();
-
-        let expected_id = "8UWKyQPf";
-
-        assert_eq!(pack.godot_version, GodotVersion::new(1, 3, 2, 1));
-        assert_eq!(pack.meta.name, "example_pack");
-        assert_eq!(pack.meta.author, "megasploot");
-        assert_eq!(pack.meta.id, expected_id);
-
-        let colors = pack.meta.custom_color_overrides;
-        assert!(!colors.enabled);
-        assert_eq!(colors.min_redness, 0.1);
-        assert_eq!(colors.min_saturation, 0.0);
-        assert_eq!(colors.red_tolerance, 0.04);
-
-        let expected_files = vec![
-            "data/walls/sample_wall.dungeondraft_wall",
-            "data/tilesets/tileset_smart.dungeondraft_tileset",
-            "data/tilesets/tileset_smart_double.dungeondraft_tileset",
-            "data/tilesets/tileset_simple.dungeondraft_tileset",
-            "textures/paths/sample_path.png",
-            "textures/paths/streak.png",
-            "textures/lights/sample_light.png",
-            "textures/roofs/roof_name/edge.png",
-            "textures/roofs/roof_name/hip.png",
-            "textures/roofs/roof_name/tiles.png",
-            "textures/roofs/roof_name/ridge.png",
-            "textures/walls/sample_wall_end.png",
-            "textures/walls/sample_wall.png",
-            "textures/portals/sample_door.png",
-            "textures/tilesets/smart/tileset_smart.png",
-            "textures/tilesets/smart_double/tileset_smart_double.png",
-            "textures/tilesets/simple/tileset_simple.png",
-        ];
-
-        for file in expected_files {
-            assert!(
-                pack.files_meta.contains_key(&file.to_owned()),
-                "Pack should contain file '{}', but does not",
-                file
-            );
-        }
-
-        let expected_object_files = vec![
-            "textures/objects/sample_barrel.png",
-            "textures/objects/sample_cauldron.png",
-        ];
-
-        for file in expected_object_files {
-            assert!(
-                pack.object_files.contains_key(&file.to_owned()),
-                "Pack should contain object file '{}', but does not",
-                file
-            );
-        }
-    }
 
     #[test]
     fn packed_file_from_read() {

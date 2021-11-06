@@ -3,6 +3,7 @@ use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
 use std::io::Read;
 
 mod asset_pack;
+mod test_asset_pack;
 
 fn main() {
     TermLogger::init(
