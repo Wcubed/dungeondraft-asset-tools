@@ -248,7 +248,7 @@ pub struct PackMeta {
     pub id: String,
     pub version: String,
     pub author: String,
-    pub custom_color_overrides: ColorOverrides,
+    pub custom_color_overrides: Option<ColorOverrides>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -280,25 +280,6 @@ pub fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
     file.read_exact(&mut magic_file_number)?;
 
     Ok(magic_file_number == ASSET_PACK_MAGIC_FILE_HEADER)
-}
-
-pub fn read_asset_pack(pack_path: &PathBuf) -> Result<AssetPack> {
-    info!("Reading '{}'", pack_path.display());
-
-    let mut pack_file = std::fs::File::open(pack_path).context("Asset pack file does not exist")?;
-    let pack = AssetPack::from_read(&mut pack_file).context("Could not read metadata")?;
-
-    info!("Godot package version: {}", pack.godot_version);
-    info!("Files in package: {}", pack.other_files.len());
-
-    info!("Pack name: {}", pack.meta.name);
-    info!("Pack author: {}", pack.meta.author);
-    info!("Pack version: {}", pack.meta.version);
-    info!("Pack id: {}", pack.meta.id);
-
-    info!("Tags: {:?}", pack.tags);
-
-    Ok(pack)
 }
 
 /// Returns true for `<pack-id>.json` files without any parent directory.
@@ -422,12 +403,12 @@ mod test {
                 id: "".to_string(),
                 version: "".to_string(),
                 author: "".to_string(),
-                custom_color_overrides: ColorOverrides {
+                custom_color_overrides: Some(ColorOverrides {
                     enabled: false,
                     min_redness: 0.0,
                     min_saturation: 0.0,
                     red_tolerance: 0.0,
-                },
+                }),
             },
             tags: Tags {
                 tags: Default::default(),

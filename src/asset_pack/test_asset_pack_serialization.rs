@@ -20,7 +20,11 @@ fn asset_pack_from_read_happy_flow() {
     assert_eq!(pack.meta.id, "12345678");
     assert_eq!(pack.meta.author, "brass_phoenix");
 
-    let color_overrides = pack.meta.custom_color_overrides;
+    let maybe_color_overrides = pack.meta.custom_color_overrides;
+    assert!(maybe_color_overrides.is_some());
+
+    let color_overrides = maybe_color_overrides.unwrap();
+
     assert!(!color_overrides.enabled);
     assert_eq!(color_overrides.min_redness, 0.1);
     assert_eq!(color_overrides.min_saturation, 0.0);

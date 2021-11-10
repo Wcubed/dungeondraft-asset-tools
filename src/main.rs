@@ -56,6 +56,16 @@ fn main() {
             exit(1)
         }
     };
+
+    info!("Godot package version: {}", pack.godot_version);
+    info!("Files in package: {}", pack.other_files.len());
+
+    info!("Pack name: {}", pack.meta.name);
+    info!("Pack author: {}", pack.meta.author);
+    info!("Pack version: {}", pack.meta.version);
+    info!("Pack id: {}", pack.meta.id);
+
+    info!("Tags: {:?}", pack.tags);
 }
 
 fn input_valid_or_exit(path: &PathBuf) {
