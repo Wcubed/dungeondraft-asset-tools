@@ -236,6 +236,10 @@ impl AssetPack {
             self.tags.sets.remove(&set);
         }
     }
+
+    fn get_files_in_tag(&self, tag: &str) -> Option<&HashSet<String>> {
+        self.tags.tags.get(tag)
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -269,7 +273,7 @@ fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
     Ok(String::from_utf8(bytes).context("Could not convert string from bytes")?)
 }
 
-fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
+pub fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
     let mut file = std::fs::File::open(pack)?;
 
     let mut magic_file_number = [0; 4];
@@ -397,7 +401,7 @@ mod test {
 
         assert!(!pack.tags.tags.contains_key("empty"));
         assert!(pack.tags.tags.contains_key("rocks"));
-        let rock_tags = pack.tags.tags.get("rocks").unwrap();
+        let rock_tags = pack.get_files_in_tag("rocks").unwrap();
 
         assert_eq!(rock_tags.len(), 1);
         assert!(rock_tags.contains(&rock_file));
