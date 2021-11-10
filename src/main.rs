@@ -1,6 +1,8 @@
 use crate::asset_pack::AssetPack;
+use anyhow::{Context, Result};
 use clap::{App, Arg};
-use log::{debug, error, info, LevelFilter};
+use glob::glob;
+use log::{debug, error, info, warn, LevelFilter};
 use simplelog::{ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 use std::fs;
 use std::fs::File;
@@ -9,14 +11,16 @@ use std::process::exit;
 
 mod asset_pack;
 
+const ASSET_PACK_EXTENSION: &str = ".dungeondraft_pack";
+
 fn main() {
     let matches = App::new("Dungeondraft Asset Tools")
         .version("0.1")
         .author("Wybe Westra <dev@wwestra.nl>")
         .about("For now can remove empty tags and tag groups from Dungeondraft asset packs.")
         .arg(
-            Arg::with_name("INPUT_FILE")
-                .help("Input file")
+            Arg::with_name("INPUT_DIR")
+                .help("Input directory, will scan recursively for `*.dungeondraft_pack` files")
                 .required(true)
                 .index(1),
         )
@@ -54,15 +58,63 @@ fn main() {
     )
     .unwrap();
 
-    let input_path = PathBuf::from(matches.value_of("INPUT_FILE").unwrap());
-    input_path_valid_or_exit(&input_path);
+    let input_dir = PathBuf::from(matches.value_of("INPUT_DIR").unwrap());
+    input_dir_valid_or_exit(&input_dir);
 
-    let mut output_path = PathBuf::from(matches.value_of("OUTPUT_DIR").unwrap());
-    output_path_valid_or_exit(&input_path, &output_path);
+    let output_dir = PathBuf::from(matches.value_of("OUTPUT_DIR").unwrap());
+    output_dir_valid_or_exit(&input_dir, &output_dir);
 
     let overwrite_allowed = matches.is_present("force_overwrite");
 
-    let mut pack = read_pack_or_exit(&input_path);
+    if let Err(e) = fs::create_dir_all(output_dir.parent().unwrap()) {
+        error!("Could not create the output directory:\n{}", e);
+    }
+
+    let input_glob = String::new() + input_dir.to_str().unwrap() + "/**/*" + ASSET_PACK_EXTENSION;
+
+    for entry in glob(&input_glob).expect("Glob pattern could not be parsed") {
+        match entry {
+            Ok(path) => {
+                info!("{}", path.display());
+                handle_pack(&path, &output_dir, overwrite_allowed);
+            }
+            Err(e) => warn!("{}", e),
+        }
+    }
+
+    info!("Done");
+}
+
+fn output_dir_valid_or_exit(input_dir: &PathBuf, output_dir: &PathBuf) {
+    if input_dir.exists() && output_dir.exists() {
+        let canonical_input = input_dir.canonicalize().unwrap();
+        let canonical_output = output_dir.canonicalize().unwrap();
+
+        if canonical_output == canonical_input {
+            error!(
+                "The output directory and input directory are the same: '{}'.",
+                canonical_output.display()
+            );
+            exit(1);
+        }
+    }
+}
+
+fn input_dir_valid_or_exit(input_dir: &PathBuf) {
+    if !input_dir.exists() {
+        error!("Input directory '{}' does not exist.", input_dir.display());
+        exit(1);
+    }
+}
+
+fn handle_pack(pack_path: &PathBuf, output_dir: &PathBuf, overwrite_allowed: bool) {
+    let mut pack = match read_pack(&pack_path) {
+        Ok(p) => p,
+        Err(e) => {
+            warn!("Could not read packfile '{}':\n{}", pack_path.display(), e);
+            return;
+        }
+    };
 
     info!("Godot package version: {}", pack.godot_version);
     info!("Files in package: {}", pack.other_files.len());
@@ -76,111 +128,62 @@ fn main() {
 
     pack.clean_tags();
 
-    debug!("Tags after cleaning: {}", pack.tags);
+    debug!("After cleaning\n{}", pack.tags);
 
-    output_path.push(input_path.file_name().unwrap());
-    info!("Saving to '{}", output_path.display());
+    let mut output_path = output_dir.clone();
+    output_path.push(pack_path.file_name().unwrap());
 
-    if let Err(e) = fs::create_dir_all(output_path.parent().unwrap()) {
-        error!("Could not create the necessary directories:\n{}", e);
-    }
+    write_pack(&pack, &output_path, overwrite_allowed);
+}
+
+fn read_pack(path: &PathBuf) -> Result<AssetPack> {
+    info!("Reading pack file '{}'", path.display());
+
+    let mut file =
+        File::open(&path).context(format!("Could not open pack file '{}'", path.display()))?;
+
+    asset_pack::AssetPack::from_read(&mut file)
+}
+
+fn write_pack(pack: &AssetPack, output_path: &PathBuf, overwrite_allowed: bool) {
+    info!(
+        "Saving pack '{}' to '{}",
+        pack.meta.name,
+        output_path.display()
+    );
 
     if output_path.exists() {
         if overwrite_allowed {
-            info!(
-                "Overwriting already existing file '{}'.",
-                output_path.display()
-            )
+            info!("Overwriting '{}'.", output_path.display())
         } else {
-            error!(
+            warn!(
                 "Output file '{}' already exists. If you want to overwrite, call again with the `-F` argument.",
                 output_path.display()
             );
-            exit(1);
+            return;
         }
     }
 
     let mut file = match File::create(&output_path) {
         Ok(f) => f,
         Err(e) => {
-            error!(
+            warn!(
                 "Could not create the output file '{}':\n{}",
                 output_path.display(),
                 e
             );
-            exit(1);
+            return;
         }
     };
 
     match pack.to_write(&mut file) {
         Ok(_) => {}
         Err(e) => {
-            error!(
+            warn!(
                 "Something went wrong while writing the pack file '{}':\n{}",
                 output_path.display(),
                 e
             );
-            exit(1);
-        }
-    }
-
-    info!("Done");
-}
-
-fn output_path_valid_or_exit(input_path: &PathBuf, output_path: &PathBuf) {
-    if input_path.exists() && output_path.exists() {
-        let canonical_input_parent = input_path.parent().unwrap().canonicalize().unwrap();
-        let canonical_output = output_path.canonicalize().unwrap();
-
-        if canonical_output == canonical_input_parent {
-            error!("The output directory and input directory are the same: '{}' refusing to overwrite pack files.", canonical_output.display());
-            exit(1);
-        }
-    }
-}
-
-fn input_path_valid_or_exit(path: &PathBuf) {
-    if !path.exists() {
-        error!("Input file '{}' does not exist.", path.display());
-        exit(1);
-    }
-    match asset_pack::is_file_asset_pack(&path) {
-        Ok(false) => {
-            error!(
-                "Input file '{}' is not a dungeondraft asset pack.",
-                path.display()
-            );
-            exit(1);
-        }
-        Ok(true) => {}
-        Err(e) => error!(
-            "Something went wrong while reading the asset pack '{}':\n{}",
-            path.display(),
-            e
-        ),
-    }
-}
-
-fn read_pack_or_exit(path: &PathBuf) -> AssetPack {
-    info!("Reading pack file '{}'", path.display());
-
-    let mut file = match File::open(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Could not open input file '{}':\n{}", path.display(), e);
-            exit(1)
-        }
-    };
-
-    match asset_pack::AssetPack::from_read(&mut file) {
-        Ok(p) => p,
-        Err(e) => {
-            error!(
-                "Something went wrong while reading the asset pack '{}':\n{}",
-                path.display(),
-                e
-            );
-            exit(1)
         }
     }
 }
