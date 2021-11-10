@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
@@ -89,15 +89,21 @@ impl AssetPack {
             // is `packs/<pack-id>/pack.json`. This is why whe ignore the second one
             // (via `is_pack_file()`)
             if is_root_json_file(pathbuf) {
-                maybe_meta = Some(
-                    serde_json::from_slice(&file_data)
-                        .context("Could not parse pack metadata file.")?,
-                );
+                maybe_meta = match serde_json::from_slice(&file_data) {
+                    Ok(meta) => Some(meta),
+                    Err(e) => {
+                        display_file_as_warning(file_data);
+                        bail!("Could not parse pack metadata file:\n{}", e)
+                    }
+                };
             } else if is_tags_file(&meta.path) {
-                maybe_tags = Some(
-                    serde_json::from_slice(&file_data)
-                        .context("Could not parse object tags file.")?,
-                );
+                maybe_tags = match serde_json::from_slice(&file_data) {
+                    Ok(tags) => Some(tags),
+                    Err(e) => {
+                        display_file_as_warning(file_data);
+                        bail!("Could not parse object tags file:\n{}", e)
+                    }
+                };
             } else if is_objects_file(&meta.path) {
                 object_files.insert(meta.path.clone(), file_data);
             } else if !is_pack_file(pathbuf) {
@@ -263,6 +269,12 @@ impl AssetPack {
 
     fn get_files_in_tag(&self, tag: &str) -> Option<&HashSet<String>> {
         self.tags.tags.get(tag)
+    }
+}
+
+fn display_file_as_warning(file_data: Vec<u8>) {
+    if let Ok(string) = String::from_utf8(file_data) {
+        warn!("```\n{}\n```", string);
     }
 }
 
