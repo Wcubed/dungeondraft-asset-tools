@@ -38,13 +38,16 @@ fn main() {
                 .short("F")
                 .help("Overwrite existing output files"),
         )
-        .arg(Arg::with_name("v").short("v").help("Print extra info"))
+        .arg(Arg::with_name("v").short("v").multiple(true).help(
+            "Print extra info.\n\
+        Put in -vv for even more info.",
+        ))
         .get_matches();
 
-    let verbosity = if matches.is_present("v") {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
+    let verbosity = match matches.occurrences_of("v") {
+        0 => LevelFilter::Warn,
+        1 => LevelFilter::Info,
+        _ => LevelFilter::Debug,
     };
 
     TermLogger::init(
@@ -72,9 +75,12 @@ fn main() {
 
     let input_glob = String::new() + input_dir.to_str().unwrap() + "/**/*" + ASSET_PACK_EXTENSION;
 
+    let mut pack_count = 0;
+
     for entry in glob(&input_glob).expect("Glob pattern could not be parsed") {
         match entry {
             Ok(path) => {
+                pack_count += 1;
                 handle_pack(&path, &output_dir, overwrite_allowed);
                 info!("---------------------------");
             }
@@ -82,7 +88,8 @@ fn main() {
         }
     }
 
-    info!("Done");
+    println!("{} packs encountered", pack_count);
+    println!("Done");
 }
 
 fn output_dir_valid_or_exit(input_dir: &PathBuf, output_dir: &PathBuf) {
@@ -108,6 +115,8 @@ fn input_dir_valid_or_exit(input_dir: &PathBuf) {
 }
 
 fn handle_pack(pack_path: &PathBuf, output_dir: &PathBuf, overwrite_allowed: bool) {
+    println!("Handling {}", pack_path.display());
+
     let mut pack = match read_pack(&pack_path) {
         Ok(p) => p,
         Err(e) => {
