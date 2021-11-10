@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use file_meta_data::FileMetaData;
@@ -30,11 +30,6 @@ const PACK_FILE_NAME: &str = "pack.json";
 const TAGS_FILE_NAME: &str = "data/default.dungeondraft_tags";
 const OBJECT_FILES_PREFIX: &str = "textures/objects/";
 
-const NAME_KEY: &str = "name";
-const ID_KEY: &str = "name";
-const VERSION_KEY: &str = "version";
-const AUTHOR_KEY: &str = "author";
-
 #[derive(Debug)]
 pub struct AssetPack {
     pub godot_version: GodotVersion,
@@ -46,6 +41,16 @@ pub struct AssetPack {
 
 impl AssetPack {
     pub fn from_read<R: Read + Seek>(data: &mut R) -> Result<Self> {
+        let mut magic_file_number = [0; 4];
+        data.read_exact(&mut magic_file_number)?;
+
+        if magic_file_number != ASSET_PACK_MAGIC_FILE_HEADER {
+            warn!(
+                "First bytes of file do not indicate this is an asset pack. \
+            Reading might not work correctly, attempting anyway."
+            );
+        }
+
         data.seek(SeekFrom::Start(ASSET_PACK_MAGIC_FILE_HEADER.len() as u64))?;
 
         let godot_version =
@@ -84,9 +89,15 @@ impl AssetPack {
             // is `packs/<pack-id>/pack.json`. This is why whe ignore the second one
             // (via `is_pack_file()`)
             if is_root_json_file(pathbuf) {
-                maybe_meta = Some(serde_json::from_slice(&file_data)?);
+                maybe_meta = Some(
+                    serde_json::from_slice(&file_data)
+                        .context("Could not parse pack metadata file.")?,
+                );
             } else if is_tags_file(&meta.path) {
-                maybe_tags = Some(serde_json::from_slice(&file_data)?);
+                maybe_tags = Some(
+                    serde_json::from_slice(&file_data)
+                        .context("Could not parse object tags file.")?,
+                );
             } else if is_objects_file(&meta.path) {
                 object_files.insert(meta.path.clone(), file_data);
             } else if !is_pack_file(pathbuf) {
@@ -278,15 +289,6 @@ fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
         .context("Could not read string")?;
 
     Ok(String::from_utf8(bytes).context("Could not convert string from bytes")?)
-}
-
-pub fn is_file_asset_pack(pack: &PathBuf) -> Result<bool> {
-    let mut file = std::fs::File::open(pack)?;
-
-    let mut magic_file_number = [0; 4];
-    file.read_exact(&mut magic_file_number)?;
-
-    Ok(magic_file_number == ASSET_PACK_MAGIC_FILE_HEADER)
 }
 
 /// Returns true for `<pack-id>.json` files without any parent directory.
