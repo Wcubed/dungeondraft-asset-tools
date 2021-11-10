@@ -8,6 +8,15 @@ pub struct Tags {
     pub sets: HashMap<String, HashSet<String>>,
 }
 
+impl Tags {
+    pub fn new() -> Self {
+        Tags {
+            tags: HashMap::new(),
+            sets: HashMap::new(),
+        }
+    }
+}
+
 impl Display for Tags {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let indent = "    ";

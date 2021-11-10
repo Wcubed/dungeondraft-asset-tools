@@ -75,8 +75,8 @@ fn main() {
     for entry in glob(&input_glob).expect("Glob pattern could not be parsed") {
         match entry {
             Ok(path) => {
-                info!("{}", path.display());
                 handle_pack(&path, &output_dir, overwrite_allowed);
+                info!("---------------------------");
             }
             Err(e) => warn!("{}", e),
         }

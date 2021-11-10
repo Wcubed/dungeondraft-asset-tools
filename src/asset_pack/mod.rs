@@ -94,10 +94,13 @@ impl AssetPack {
             }
         }
 
+        // Some packs don't include any object files, and therefore also don't have a tags file.
+        let tags = maybe_tags.unwrap_or(Tags::new());
+
         Ok(AssetPack {
             godot_version,
             meta: maybe_meta.unwrap(),
-            tags: maybe_tags.unwrap(),
+            tags,
             object_files,
             other_files,
         })
