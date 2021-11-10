@@ -12,7 +12,9 @@ anyhow = "1.0.44"
 byteorder = "1.4.3"
 md-5 = "0.9.1"
 serde = {version = "1.0.130", features = ["derive"]}
-serde_json = "1.0.68"
+# We use json5 instead of serde_json, because the json used in the asset packs seems not to be held to the strict
+# standards of standard json.
+json5 = "0.4.1"
 clap = "2.33.3"
 glob = "0.3.0"
 

@@ -89,18 +89,22 @@ impl AssetPack {
             // is `packs/<pack-id>/pack.json`. This is why whe ignore the second one
             // (via `is_pack_file()`)
             if is_root_json_file(pathbuf) {
-                maybe_meta = match serde_json::from_slice(&file_data) {
+                let data_string = String::from_utf8(file_data)?;
+
+                maybe_meta = match json5::from_str(&data_string) {
                     Ok(meta) => Some(meta),
                     Err(e) => {
-                        display_file_as_info(file_data);
+                        display_file_as_info(&data_string);
                         bail!("Could not parse pack metadata file:\n{}", e)
                     }
                 };
             } else if is_tags_file(&meta.path) {
-                maybe_tags = match serde_json::from_slice(&file_data) {
+                let data_string = String::from_utf8(file_data)?;
+
+                maybe_tags = match json5::from_str(&data_string) {
                     Ok(tags) => Some(tags),
                     Err(e) => {
-                        display_file_as_info(file_data);
+                        display_file_as_info(&data_string);
                         bail!("Could not parse object tags file:\n{}", e)
                     }
                 };
@@ -131,7 +135,7 @@ impl AssetPack {
         let file_path_prefix =
             RESOURCE_PATH_PREFIX.to_owned() + ASSET_PACK_PREFIX + self.meta.id.as_str();
 
-        let pack_meta_file = serde_json::to_vec(&self.meta)?;
+        let pack_meta_file = json5::to_string(&self.meta)?.as_bytes().to_vec();
         let root_pack_file_metadata =
             FileMetaData::new(file_path_prefix.clone() + ".json", pack_meta_file.len());
         let pack_file_metadata = FileMetaData::new(
@@ -139,7 +143,7 @@ impl AssetPack {
             pack_meta_file.len(),
         );
 
-        let tags_file = serde_json::to_vec(&self.tags)?;
+        let tags_file = json5::to_string(&self.tags)?.as_bytes().to_vec();
         let tags_metadata = FileMetaData::new(
             file_path_prefix.clone() + "/" + TAGS_FILE_NAME,
             tags_file.len(),
@@ -272,10 +276,8 @@ impl AssetPack {
     }
 }
 
-fn display_file_as_info(file_data: Vec<u8>) {
-    if let Ok(string) = String::from_utf8(file_data) {
-        info!("```\n{}\n```", string);
-    }
+fn display_file_as_info(file_data: &str) {
+    info!("```\n{}\n```", file_data);
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
