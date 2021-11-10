@@ -1,3 +1,4 @@
+use log::trace;
 use std::cmp::Ordering;
 use std::io::{Read, Seek, Write};
 
@@ -36,6 +37,8 @@ impl FileMetaData {
         let (_id, path) = path_with_maybe_pack_id
             .split_once('/')
             .unwrap_or(("", path_with_maybe_pack_id.as_str()));
+
+        trace!("File meta: {}", path);
 
         let offset = data.read_i64::<LE>()? as u64;
         let size = data.read_i64::<LE>()? as usize;

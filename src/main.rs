@@ -43,14 +43,15 @@ fn main() {
         )
         .arg(Arg::with_name("v").short("v").multiple(true).help(
             "Print extra info.\n\
-        Put in -vv for even more info.",
+        Put in -vv, or -vvv for even more info.",
         ))
         .get_matches();
 
     let verbosity = match matches.occurrences_of("v") {
         0 => LevelFilter::Warn,
         1 => LevelFilter::Info,
-        _ => LevelFilter::Debug,
+        2 => LevelFilter::Debug,
+        _ => LevelFilter::Trace,
     };
 
     TermLogger::init(
@@ -85,7 +86,10 @@ fn main() {
             Ok(path) => {
                 pack_count += 1;
                 handle_pack(&path, &output_dir, overwrite_allowed);
-                info!("---------------------------");
+
+                info!("");
+                info!("---------------------------------------------");
+                info!("");
             }
             Err(e) => warn!("{}", e),
         }
@@ -129,7 +133,10 @@ fn handle_pack(pack_path: &PathBuf, output_dir: &PathBuf, overwrite_allowed: boo
     };
 
     info!("Godot package version: {}", pack.godot_version);
-    info!("Files in package: {}", pack.other_files.len());
+    info!(
+        "Files in package: {}",
+        pack.object_files.len() + pack.other_files.len()
+    );
 
     info!("Pack name: {}", pack.meta.name);
     info!("Pack author: {}", pack.meta.author);
