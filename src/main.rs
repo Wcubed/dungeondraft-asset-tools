@@ -1,6 +1,6 @@
 use clap::{App, Arg};
-use log::{error, info, LevelFilter};
-use simplelog::{ColorChoice, Config, TermLogger, TerminalMode};
+use log::{debug, error, info, LevelFilter};
+use simplelog::{ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 use std::fs::File;
 use std::path::PathBuf;
 use std::process::exit;
@@ -8,14 +8,6 @@ use std::process::exit;
 mod asset_pack;
 
 fn main() {
-    TermLogger::init(
-        LevelFilter::Info,
-        Config::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
-    .unwrap();
-
     let matches = App::new("Dungeondraft Asset Tools")
         .version("0.1")
         .author("Wybe Westra <dev@wwestra.nl>")
@@ -32,7 +24,25 @@ fn main() {
                 .required(true)
                 .index(2),
         )
+        .arg(Arg::with_name("v").short("v").help("Print extra info"))
         .get_matches();
+
+    let verbosity = if matches.is_present("v") {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+
+    TermLogger::init(
+        verbosity,
+        ConfigBuilder::default()
+            .set_thread_level(LevelFilter::Trace)
+            .set_target_level(LevelFilter::Trace)
+            .build(),
+        TerminalMode::Mixed,
+        ColorChoice::Auto,
+    )
+    .unwrap();
 
     let path = PathBuf::from(matches.value_of("INPUT_FILE").unwrap());
     input_valid_or_exit(&path);
@@ -45,7 +55,7 @@ fn main() {
         }
     };
 
-    let pack = match asset_pack::AssetPack::from_read(&mut file) {
+    let mut pack = match asset_pack::AssetPack::from_read(&mut file) {
         Ok(p) => p,
         Err(e) => {
             error!(
@@ -65,7 +75,9 @@ fn main() {
     info!("Pack version: {}", pack.meta.version);
     info!("Pack id: {}", pack.meta.id);
 
-    info!("Tags: {:?}", pack.tags);
+    debug!("Tags: {:?}", pack.tags);
+
+    pack.clean_tags();
 }
 
 fn input_valid_or_exit(path: &PathBuf) {

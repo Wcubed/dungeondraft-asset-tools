@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use log::info;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 use file_meta_data::FileMetaData;
@@ -178,6 +178,8 @@ impl AssetPack {
     /// - Removes non existing tags from tag sets.
     /// - Removes empty tag sets.
     pub fn clean_tags(&mut self) {
+        info!("Cleaning empty tags and tag groups.");
+
         let mut empty_tags = vec![];
 
         for (tag, files) in self.tags.tags.iter_mut() {
@@ -190,7 +192,7 @@ impl AssetPack {
             }
 
             for file in not_existing_files {
-                info!(
+                debug!(
                     "Removing file '{}' from tag '{}' because it does not exist.",
                     file, tag
                 );
@@ -202,9 +204,9 @@ impl AssetPack {
             }
         }
 
-        for tag in empty_tags {
-            info!("Removing tag '{}' because it is empty.", tag);
-            self.tags.tags.remove(&tag);
+        for tag in empty_tags.iter() {
+            debug!("Removing tag '{}' because it is empty.", tag);
+            self.tags.tags.remove(tag);
         }
 
         let mut empty_sets = vec![];
@@ -219,7 +221,7 @@ impl AssetPack {
             }
 
             for tag in not_existing_tags {
-                info!(
+                debug!(
                     "Removing tag '{}' from set '{}' because it does not exist.",
                     tag, set
                 );
@@ -231,10 +233,16 @@ impl AssetPack {
             }
         }
 
-        for set in empty_sets {
-            info!("Removing set '{}' because it is empty.", set);
-            self.tags.sets.remove(&set);
+        for set in empty_sets.iter() {
+            debug!("Removing set '{}' because it is empty.", set);
+            self.tags.sets.remove(set);
         }
+
+        info!(
+            "Removed {} empty tags, and {} empty tag sets.",
+            empty_tags.len(),
+            empty_sets.len()
+        );
     }
 
     fn get_files_in_tag(&self, tag: &str) -> Option<&HashSet<String>> {
