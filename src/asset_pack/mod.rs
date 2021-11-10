@@ -92,7 +92,7 @@ impl AssetPack {
                 maybe_meta = match serde_json::from_slice(&file_data) {
                     Ok(meta) => Some(meta),
                     Err(e) => {
-                        display_file_as_warning(file_data);
+                        display_file_as_info(file_data);
                         bail!("Could not parse pack metadata file:\n{}", e)
                     }
                 };
@@ -100,7 +100,7 @@ impl AssetPack {
                 maybe_tags = match serde_json::from_slice(&file_data) {
                     Ok(tags) => Some(tags),
                     Err(e) => {
-                        display_file_as_warning(file_data);
+                        display_file_as_info(file_data);
                         bail!("Could not parse object tags file:\n{}", e)
                     }
                 };
@@ -272,9 +272,9 @@ impl AssetPack {
     }
 }
 
-fn display_file_as_warning(file_data: Vec<u8>) {
+fn display_file_as_info(file_data: Vec<u8>) {
     if let Ok(string) = String::from_utf8(file_data) {
-        warn!("```\n{}\n```", string);
+        info!("```\n{}\n```", string);
     }
 }
 
