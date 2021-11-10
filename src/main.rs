@@ -11,6 +11,9 @@ use std::process::exit;
 
 mod asset_pack;
 
+// TODO: For some reason, Dungeondraft cannot read packs we have cleaned yet.
+//       We are doing something wrong somewhere, but where?
+
 const ASSET_PACK_EXTENSION: &str = ".dungeondraft_pack";
 
 fn main() {
@@ -69,7 +72,7 @@ fn main() {
 
     let overwrite_allowed = matches.is_present("force_overwrite");
 
-    if let Err(e) = fs::create_dir_all(output_dir.parent().unwrap()) {
+    if let Err(e) = fs::create_dir_all(&output_dir) {
         error!("Could not create the output directory:\n{}", e);
     }
 
