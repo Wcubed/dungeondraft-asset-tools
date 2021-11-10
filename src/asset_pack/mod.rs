@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 
 use file_meta_data::FileMetaData;
 use godot_version::GodotVersion;
+use tags::Tags;
 
 mod file_meta_data;
 mod godot_version;
+mod tags;
 mod test_asset_pack_serialization;
 
 const ASSET_PACK_MAGIC_FILE_HEADER: [u8; 4] = [0x47, 0x44, 0x50, 0x43];
@@ -267,12 +269,6 @@ pub struct ColorOverrides {
     pub red_tolerance: f32,
 }
 
-#[derive(Debug, Deserialize, Serialize, Eq, PartialEq)]
-pub struct Tags {
-    tags: HashMap<String, HashSet<String>>,
-    sets: HashMap<String, HashSet<String>>,
-}
-
 fn read_string(data: &mut dyn Read, length: usize) -> Result<String> {
     let mut bytes = vec![0; length];
     data.read_exact(bytes.as_mut_slice())
@@ -329,9 +325,8 @@ mod test {
 
     use crate::asset_pack::file_meta_data::FileMetaData;
     use crate::asset_pack::godot_version::GodotVersion;
-    use crate::asset_pack::{
-        is_root_json_file, AssetPack, ColorOverrides, PackMeta, Tags, MD5_BYTES,
-    };
+    use crate::asset_pack::tags::Tags;
+    use crate::asset_pack::{is_root_json_file, AssetPack, ColorOverrides, PackMeta, MD5_BYTES};
 
     #[test]
     fn packed_file_from_read() {

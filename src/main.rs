@@ -75,9 +75,11 @@ fn main() {
     info!("Pack version: {}", pack.meta.version);
     info!("Pack id: {}", pack.meta.id);
 
-    debug!("Tags: {:?}", pack.tags);
+    debug!("{}", pack.tags);
 
     pack.clean_tags();
+
+    debug!("Tags after cleaning: {}", pack.tags);
 }
 
 fn input_valid_or_exit(path: &PathBuf) {
