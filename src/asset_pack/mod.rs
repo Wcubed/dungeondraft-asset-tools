@@ -284,6 +284,7 @@ pub struct PackMeta {
     pub id: String,
     pub version: String,
     pub author: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_color_overrides: Option<ColorOverrides>,
 }
 

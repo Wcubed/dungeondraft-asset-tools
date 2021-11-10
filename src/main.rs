@@ -11,9 +11,6 @@ use std::process::exit;
 
 mod asset_pack;
 
-// TODO: For some reason, Dungeondraft cannot read packs we have cleaned yet.
-//       We are doing something wrong somewhere, but where?
-
 const ASSET_PACK_EXTENSION: &str = ".dungeondraft_pack";
 
 fn main() {
