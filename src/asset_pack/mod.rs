@@ -327,13 +327,6 @@ fn is_objects_file(path: &str) -> bool {
     path.starts_with(OBJECT_FILES_PREFIX)
 }
 
-fn unpack_file(read: &mut dyn Read, file_size: usize) -> Result<Vec<u8>> {
-    let mut file_data = vec![0; file_size];
-    read.read_exact(file_data.as_mut_slice())?;
-
-    Ok(file_data)
-}
-
 #[cfg(test)]
 mod test {
     use std::collections::{HashMap, HashSet};
