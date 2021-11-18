@@ -16,6 +16,13 @@ __Do not redistribute asset packs without the permission of the original creator
 ## 0.1.0
 - Can clean empty tags and tag groups from a folder of asset files
 
+# Known issues
+
+- Cannot read asset packs that use unescaped backslashes as path separators in their `.json` files.
+This is not an issue with the tool, but with the asset pack.
+Using backslashes as path separators is not actually valid json.
+Will output a warning when encountering such a pack, and skip it.
+
 # Building
 
 To build the program on your own system:
