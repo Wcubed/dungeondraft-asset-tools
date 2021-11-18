@@ -1,7 +1,11 @@
 This command line program can currently read a complete folder of asset packs, clean any object tags / tag sets that
 don't have any objects associated with them, and then output the cleaned packs into a different folder.
 
+Works on Linux. Should also work on Windows, but hasn't been tested there.
+
 For further usage instructions, call with the `-h` or `--help` arguments.
+
+__Do not redistribute asset packs without the permission of the original creator__.
 
 # Building
 

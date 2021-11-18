@@ -4,7 +4,7 @@ use std::io::{Read, Seek, Write};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
-use crate::asset_pack::I32;
+use crate::asset_pack::utils::I32;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct GodotVersion {

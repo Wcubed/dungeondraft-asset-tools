@@ -1,5 +1,5 @@
-use crate::asset_pack::AssetPack;
 use anyhow::{Context, Result};
+use asset_pack::AssetPack;
 use clap::{App, Arg};
 use glob::glob;
 use log::{debug, error, info, warn, LevelFilter};
@@ -158,7 +158,7 @@ fn read_pack(path: &PathBuf) -> Result<AssetPack> {
     let mut file =
         File::open(&path).context(format!("Could not open pack file '{}'", path.display()))?;
 
-    asset_pack::AssetPack::from_read(&mut file)
+    asset_pack::asset_pack::AssetPack::from_read(&mut file)
 }
 
 fn write_pack(pack: &AssetPack, output_path: &PathBuf, overwrite_allowed: bool) {

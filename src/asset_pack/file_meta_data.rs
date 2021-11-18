@@ -4,8 +4,9 @@ use std::io::{Read, Seek, Write};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
-use crate::asset_pack;
-use crate::asset_pack::{ASSET_PACK_PREFIX, I32, I64, MD5_BYTES, RESOURCE_PATH_PREFIX};
+use crate::asset_pack::path_utils::{ASSET_PACK_PREFIX, RESOURCE_PATH_PREFIX};
+use crate::asset_pack::utils;
+use crate::asset_pack::utils::{I32, I64, MD5_BYTES};
 
 #[derive(Debug, Clone)]
 /// Comparing two `FileMetaData` will compare their offsets.
@@ -29,7 +30,7 @@ impl FileMetaData {
     /// Strips `res://packs/<pack-id>/` if the file path starts with it.
     pub fn from_read<R: Read + Seek>(data: &mut R) -> anyhow::Result<Self> {
         let path_length = data.read_i32::<LE>()? as usize;
-        let path_with_maybe_pack_id = asset_pack::read_string(data, path_length)?
+        let path_with_maybe_pack_id = utils::read_string(data, path_length)?
             .trim_start_matches(RESOURCE_PATH_PREFIX)
             .trim_start_matches(ASSET_PACK_PREFIX)
             .to_owned();
