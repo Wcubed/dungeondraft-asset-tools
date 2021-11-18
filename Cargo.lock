@@ -117,6 +117,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dd_asset_tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "clap",
+ "glob",
+ "json5",
+ "log",
+ "md-5",
+ "serde",
+ "simplelog",
+ "tempfile",
+]
+
+[[package]]
 name = "digest"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,22 +148,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3dd60d1080a57a05ab032377049e0591415d2b31afd7028356dbf3cc6dcb066"
 dependencies = [
  "generic-array 0.14.4",
-]
-
-[[package]]
-name = "dungeondraft_asset_tools"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "byteorder",
- "clap",
- "glob",
- "json5",
- "log",
- "md-5",
- "serde",
- "simplelog",
- "tempfile",
 ]
 
 [[package]]
