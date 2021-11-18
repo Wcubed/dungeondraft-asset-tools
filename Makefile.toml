@@ -1,0 +1,23 @@
+[tasks.build-release-all]
+dependencies = ["test-release-all"]
+run_task = { name = ["cross-build-release-linux", "cross-build-release-windows"] }
+
+[tasks.test-release-all]
+# Run unit tests in release mode for all supported OS's
+run_task = { name = ["cross-test-release-linux", "cross-test-release-windows"] }
+
+[tasks.cross-build-release-linux]
+command = "cross"
+args = ["build", "--release", "--target", "x86_64-unknown-linux-gnu"]
+
+[tasks.cross-test-release-linux]
+command = "cross"
+args = ["test", "--release", "--target", "x86_64-unknown-linux-gnu"]
+
+[tasks.cross-build-release-windows]
+command = "cross"
+args = ["build", "--release", "--target", "x86_64-pc-windows-gnu"]
+
+[tasks.cross-test-release-windows]
+command = "cross"
+args = ["test", "--release", "--target", "x86_64-pc-windows-gnu"]
