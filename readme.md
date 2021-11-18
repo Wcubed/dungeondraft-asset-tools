@@ -8,6 +8,7 @@ Works on Linux. Should also work on Windows, but hasn't been tested there.
 
 - Basic usage: `dd_asset_tools <INPUT_DIR> <OUTPUT_DIR>`
 - Add `-F` to overwrite existing packs in the output directory.
+- `dd_asset_tools -h` shows additional help info.
 
 __Do not redistribute asset packs without the permission of the original creator__.
 
